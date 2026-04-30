@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: linx-la
+Version: 0.1.0
+Summary: NumPy-like C++ linear algebra library with Schur inverse and SIMD matmul
+Requires-Python: >=3.9
+Requires-Dist: numpy
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
