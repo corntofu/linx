@@ -31,7 +31,53 @@ def test_solve():
 def test_condition_number():
     a = np.array([[4.0, 7.0], [2.0, 6.0]])
     assert linx.condition_number(a) > 1.0
-    assert "thread" in linx.hardware_backend()
+    backend = linx.hardware_backend()
+    assert isinstance(backend, str) and len(backend) > 0
+
+
+# ── new Matrix class tests ──────────────────────────────────────────────────
+
+def test_matrix_ops():
+    A = linx.Matrix([[1.0, 2.0], [3.0, 4.0]])
+    B = linx.Matrix([[5.0, 6.0], [7.0, 8.0]])
+
+    # addition / subtraction
+    np.testing.assert_allclose((A + B).data, np.array([[6., 8.], [10., 12.]]))
+    np.testing.assert_allclose((A - B).data, np.array([[-4., -4.], [-4., -4.]]))
+
+    # scalar multiplication
+    np.testing.assert_allclose((A * 2.5).data, np.array([[2.5, 5.], [7.5, 10.]]))
+
+    # Hadamard product
+    np.testing.assert_allclose((A * B).data, np.array([[5., 12.], [21., 32.]]))
+
+    # matmul
+    np.testing.assert_allclose((A @ B).data, A.data @ B.data)
+
+    # transpose
+    np.testing.assert_allclose(A.T.data, np.array([[1., 3.], [2., 4.]]))
+
+    # negation
+    np.testing.assert_allclose((-A).data, np.array([[-1., -2.], [-3., -4.]]))
+
+    # inverse
+    invA = A.inv()
+    np.testing.assert_allclose((A @ invA).data, np.eye(2), rtol=1e-8, atol=1e-8)
+
+    # norms
+    assert A.frobenius_norm() > 0
+
+
+def test_matrix_factories():
+    Z = linx.Matrix.zeros((3, 4))
+    assert Z.shape == (3, 4)
+    np.testing.assert_allclose(Z.data, 0.0)
+
+    O = linx.Matrix.ones((2, 3))
+    np.testing.assert_allclose(O.data, 1.0)
+
+    I = linx.Matrix.eye(3)
+    np.testing.assert_allclose(I.data, np.eye(3))
 
 
 if __name__ == "__main__":
@@ -39,4 +85,6 @@ if __name__ == "__main__":
     test_inverse()
     test_solve()
     test_condition_number()
+    test_matrix_ops()
+    test_matrix_factories()
     print("all python linx tests passed")

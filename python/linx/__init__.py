@@ -5,30 +5,193 @@ from __future__ import annotations
 import numpy as np
 
 from ._linx import (
+    add,
     condition_number,
+    frobenius_norm,
+    hadamard,
     hardware_backend,
     inverse,
     inverse_schur,
     matmul,
     matmul_strassen,
+    neg,
+    residual_norm,
+    scalar_mul,
     solve,
+    subtract,
+    transpose,
 )
 
 __all__ = [
+    "Matrix",
     "array",
     "arange",
     "condition_number",
     "eye",
+    "frobenius_norm",
     "hardware_backend",
     "inverse",
     "inverse_schur",
     "matmul",
     "matmul_strassen",
     "ones",
+    "residual_norm",
     "solve",
     "zeros",
 ]
 
+
+# ── ndarray ↔ linx.Matrix helpers ────────────────────────────────────────────
+
+def _as_array(obj):
+    """Ensure `obj` is a numpy float64 2D contiguous C-order array."""
+    if isinstance(obj, Matrix):
+        return obj._data
+    arr = np.asarray(obj, dtype=np.float64)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    return np.ascontiguousarray(arr)
+
+
+# ── Matrix class ─────────────────────────────────────────────────────────────
+
+class Matrix:
+    """linx Matrix – wraps a NumPy float64 2D array and delegates **every
+    arithmetic operation** to the C++ linx backend (SIMD + BLAS + LAPACK).
+
+    - ``+`` / ``-`` → vDSP / SIMD element‑wise
+    - ``*`` (scalar) → vDSP / SIMD scalar multiply
+    - ``*`` (matrix) → element‑wise Hadamard (vDSP / SIMD)
+    - ``@`` → matmul (BLAS `cblas_dgemm` or AVX2/NEON + threads)
+    - ``-`` (unary) → vDSP negate
+    - ``/`` (scalar) → scalar multiply by reciprocal
+    - ``.T`` → vDSP transposition
+    - ``.inv()`` → BLAS/LAPACK for ≤512, Schur complement for larger
+    """
+
+    __slots__ = ("_data",)
+
+    def __init__(self, data, dtype=np.float64):
+        if isinstance(data, Matrix):
+            data = data._data
+        arr = np.asarray(data, dtype=dtype)
+        if arr.ndim > 2:
+            raise ValueError("linx.Matrix only supports 1‑D or 2‑D arrays")
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        self._data = np.ascontiguousarray(arr)  # C‑order for linx backend
+
+    # -- properties ------------------------------------------------------------
+
+    @property
+    def data(self) -> np.ndarray:
+        """Return the underlying NumPy array (writable view)."""
+        return self._data
+
+    @property
+    def shape(self):
+        return self._data.shape
+
+    @property
+    def rows(self):
+        return self._data.shape[0]
+
+    @property
+    def cols(self):
+        return self._data.shape[1]
+
+    @property
+    def T(self):
+        return Matrix(transpose(self._data))
+
+    # -- dunder methods --------------------------------------------------------
+
+    def __repr__(self):
+        return f"Matrix(\n{self._data!r}\n)"
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __setitem__(self, key, value):
+        self._data[key] = value
+
+    def __add__(self, other):
+        return Matrix(add(self._data, _as_array(other)))
+
+    def __radd__(self, other):
+        return self + other
+
+    def __sub__(self, other):
+        return Matrix(subtract(self._data, _as_array(other)))
+
+    def __rsub__(self, other):
+        return Matrix(subtract(_as_array(other), self._data))
+
+    def __mul__(self, other):
+        if np.isscalar(other):
+            return Matrix(scalar_mul(self._data, float(other)))
+        return Matrix(hadamard(self._data, _as_array(other)))
+
+    def __rmul__(self, other):
+        if np.isscalar(other):
+            return Matrix(scalar_mul(self._data, float(other)))
+        return Matrix(hadamard(_as_array(other), self._data))
+
+    def __matmul__(self, other):
+        return Matrix(matmul(self._data, _as_array(other)))
+
+    def __rmatmul__(self, other):
+        return Matrix(matmul(_as_array(other), self._data))
+
+    def __truediv__(self, scalar):
+        return Matrix(scalar_mul(self._data, 1.0 / float(scalar)))
+
+    def __neg__(self):
+        return Matrix(neg(self._data))
+
+    # -- linear algebra --------------------------------------------------------
+
+    def inv(self, method="schur", min_block=32, regularization=0.0, eps=1e-12):
+        """Inverse matrix using C++ linx backend."""
+        return Matrix(inverse(self._data, method=method, min_block=min_block,
+                              regularization=regularization, eps=eps))
+
+    def solve(self, b):
+        """Solve A @ X = B."""
+        return Matrix(solve(self._data, _as_array(b)))
+
+    def condition_number(self, eps=1e-12):
+        """Frobenius condition number estimate."""
+        return condition_number(self._data, eps=eps)
+
+    def frobenius_norm(self):
+        return frobenius_norm(self._data)
+
+    def residual_norm(self, inv_mat=None):
+        if inv_mat is None:
+            inv_mat = self.inv()
+        return residual_norm(self._data, _as_array(inv_mat))
+
+    # -- factory methods -------------------------------------------------------
+
+    @staticmethod
+    def zeros(shape, dtype=np.float64):
+        return Matrix(np.zeros(shape, dtype=dtype))
+
+    @staticmethod
+    def ones(shape, dtype=np.float64):
+        return Matrix(np.ones(shape, dtype=dtype))
+
+    @staticmethod
+    def eye(n, dtype=np.float64):
+        return Matrix(np.eye(n, dtype=dtype))
+
+    @staticmethod
+    def arange(*args, dtype=np.float64):
+        return Matrix(np.arange(*args, dtype=dtype))
+
+
+# ── convenience helpers (backward‑compatible) ────────────────────────────────
 
 def array(values, dtype=np.float64):
     return np.asarray(values, dtype=dtype)

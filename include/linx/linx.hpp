@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <initializer_list>
@@ -19,6 +20,15 @@
 #include <immintrin.h>
 #elif defined(__aarch64__) || defined(__ARM_NEON)
 #include <arm_neon.h>
+#endif
+
+// ── Apple Accelerate BLAS 통합 ──────────────────────────────────────────────
+// macOS / iOS 환경에서 자동으로 BLAS 가속을 사용합니다.
+#if defined(__APPLE__)
+#include <Accelerate/Accelerate.h>
+#define LINX_HAS_BLAS 1
+#else
+#define LINX_HAS_BLAS 0
 #endif
 
 namespace la {
@@ -89,11 +99,13 @@ public:
     bool square() const noexcept { return rows_ == cols_; }
 
     T& operator()(std::size_t row, std::size_t col) {
-        return data_.at(row * cols_ + col);
+        assert(row < rows_ && col < cols_);
+        return data_[row * cols_ + col];
     }
 
     const T& operator()(std::size_t row, std::size_t col) const {
-        return data_.at(row * cols_ + col);
+        assert(row < rows_ && col < cols_);
+        return data_[row * cols_ + col];
     }
 
     const std::vector<T>& data() const noexcept { return data_; }
@@ -111,8 +123,18 @@ public:
 
     Matrix transpose() const {
         Matrix out(cols_, rows_);
-        for (std::size_t r = 0; r < rows_; ++r) {
-            for (std::size_t c = 0; c < cols_; ++c) {
+        const std::size_t rows = rows_;
+        const std::size_t cols = cols_;
+#if LINX_HAS_BLAS
+        if constexpr (std::is_same<T, double>::value) {
+            vDSP_mtransD(data_.data(), 1, out.data_.data(), 1,
+                         static_cast<vDSP_Length>(cols),
+                         static_cast<vDSP_Length>(rows));
+            return out;
+        }
+#endif
+        for (std::size_t r = 0; r < rows; ++r) {
+            for (std::size_t c = 0; c < cols; ++c) {
                 out(c, r) = (*this)(r, c);
             }
         }
@@ -171,6 +193,13 @@ public:
     Matrix operator+(const Matrix& rhs) const {
         require_same_shape(rhs, "add");
         Matrix out(rows_, cols_);
+#if LINX_HAS_BLAS
+        if constexpr (std::is_same<T, double>::value) {
+            vDSP_vaddD(data_.data(), 1, rhs.data_.data(), 1,
+                       out.data_.data(), 1, data_.size());
+            return out;
+        }
+#endif
         for (std::size_t i = 0; i < data_.size(); ++i) {
             out.data_[i] = data_[i] + rhs.data_[i];
         }
@@ -180,6 +209,13 @@ public:
     Matrix operator-(const Matrix& rhs) const {
         require_same_shape(rhs, "subtract");
         Matrix out(rows_, cols_);
+#if LINX_HAS_BLAS
+        if constexpr (std::is_same<T, double>::value) {
+            vDSP_vsubD(rhs.data_.data(), 1, data_.data(), 1,
+                       out.data_.data(), 1, data_.size());
+            return out;
+        }
+#endif
         for (std::size_t i = 0; i < data_.size(); ++i) {
             out.data_[i] = data_[i] - rhs.data_[i];
         }
@@ -188,6 +224,12 @@ public:
 
     Matrix operator-() const {
         Matrix out(rows_, cols_);
+#if LINX_HAS_BLAS
+        if constexpr (std::is_same<T, double>::value) {
+            vDSP_vnegD(data_.data(), 1, out.data_.data(), 1, data_.size());
+            return out;
+        }
+#endif
         for (std::size_t i = 0; i < data_.size(); ++i) {
             out.data_[i] = -data_[i];
         }
@@ -196,6 +238,14 @@ public:
 
     Matrix operator*(T scalar) const {
         Matrix out(rows_, cols_);
+#if LINX_HAS_BLAS
+        if constexpr (std::is_same<T, double>::value) {
+            double s = static_cast<double>(scalar);
+            vDSP_vsmulD(data_.data(), 1, &s,
+                        out.data_.data(), 1, data_.size());
+            return out;
+        }
+#endif
         for (std::size_t i = 0; i < data_.size(); ++i) {
             out.data_[i] = data_[i] * scalar;
         }
@@ -206,16 +256,19 @@ public:
         if (std::abs(scalar) <= std::numeric_limits<T>::epsilon()) {
             throw LinAlgError("division by a near-zero scalar");
         }
-        Matrix out(rows_, cols_);
-        for (std::size_t i = 0; i < data_.size(); ++i) {
-            out.data_[i] = data_[i] / scalar;
-        }
-        return out;
+        return (*this) * (T{1} / scalar);
     }
 
     Matrix hadamard(const Matrix& rhs) const {
         require_same_shape(rhs, "multiply elementwise");
         Matrix out(rows_, cols_);
+#if LINX_HAS_BLAS
+        if constexpr (std::is_same<T, double>::value) {
+            vDSP_vmulD(data_.data(), 1, rhs.data_.data(), 1,
+                       out.data_.data(), 1, data_.size());
+            return out;
+        }
+#endif
         for (std::size_t i = 0; i < data_.size(); ++i) {
             out.data_[i] = data_[i] * rhs.data_[i];
         }
@@ -338,7 +391,9 @@ inline double dot_contiguous(const double* lhs, const double* rhs, std::size_t n
 } // namespace detail
 
 inline std::string hardware_backend() {
-#if defined(__AVX2__)
+#if LINX_HAS_BLAS
+    return "Apple Accelerate BLAS/LAPACK";
+#elif defined(__AVX2__)
     return "AVX2 SIMD + std::thread";
 #elif defined(__AVX__)
     return "AVX SIMD + std::thread";
@@ -362,7 +417,16 @@ Matrix<T> matmul_classic(const Matrix<T>& lhs, const Matrix<T>& rhs) {
     const std::size_t work = rows * inner * cols;
 
     if constexpr (std::is_same<T, double>::value) {
-        const auto rhs_t = rhs.transpose();
+#if LINX_HAS_BLAS
+        // Apple Accelerate BLAS를 이용한 고성능 행렬 곱셈
+        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    static_cast<int>(rows), static_cast<int>(cols), static_cast<int>(inner),
+                    1.0, lhs.data().data(), static_cast<int>(inner),
+                    rhs.data().data(), static_cast<int>(cols),
+                    0.0, out.data().data(), static_cast<int>(cols));
+#else
+        // BLAS가 없으면 기존 SIMD + 스레드 경로 사용
+        const Matrix<T> rhs_t = rhs.transpose();  // 복사하여 소유권 확보
         const auto& lhs_data = lhs.data();
         const auto& rhs_data = rhs_t.data();
         auto& out_data = out.data();
@@ -378,6 +442,7 @@ Matrix<T> matmul_classic(const Matrix<T>& lhs, const Matrix<T>& rhs) {
         };
 
         detail::parallel_for_rows(rows, 64 * 64 * 64, work, worker);
+#endif
         return out;
     } else {
         constexpr std::size_t block = 32;
@@ -414,6 +479,7 @@ Matrix<T> matmul_classic(const Matrix<T>& lhs, const Matrix<T>& rhs) {
 namespace detail {
 
 inline std::size_t next_power_of_two(std::size_t n) {
+    if (n == 0) return 1;  // 방어: 0 입력 시 1 반환
     std::size_t out = 1;
     while (out < n) {
         out <<= 1;
@@ -460,6 +526,52 @@ Matrix<T> strassen_square(const Matrix<T>& lhs, const Matrix<T>& rhs, std::size_
     out.set_block(h, h, p1 + p5 - p3 - p7);
     return out;
 }
+
+
+// ── LAPACK을 이용한 빠른 역행렬 (double, Apple Accelerate) ──────────────
+#if LINX_HAS_BLAS
+inline Matrix<double> inverse_lapack(const Matrix<double>& matrix, double eps = 1e-12) {
+    if (!matrix.square()) {
+        throw ShapeError("inverse_lapack requires a square matrix");
+    }
+    const std::size_t n = matrix.rows();
+    if (n == 0) return matrix;
+
+    // dgetrf_ / dgetri_ 는 column-major 행렬을 요구하므로, row-major를 column-major로
+    // 변환하기 위해 transpose 한 후 column-major 포인터로 전달합니다.
+    Matrix<double> a_col = matrix.transpose();  // data()가 column-major로 해석됨
+    
+    int n_int = static_cast<int>(n);
+    std::vector<int> ipiv(n_int);
+    int info = 0;
+
+    // LU 분해 (dgetrf)
+    dgetrf_(&n_int, &n_int, a_col.data().data(), &n_int, ipiv.data(), &info);
+    if (info != 0) {
+        throw LinAlgError("dgetrf failed: matrix is singular or ill-conditioned");
+    }
+
+    // 역행렬 계산을 위한 작업 공간 쿼리
+    int lwork = -1;
+    double work_query = 0.0;
+    dgetri_(&n_int, a_col.data().data(), &n_int, ipiv.data(), &work_query, &lwork, &info);
+    if (info != 0) {
+        throw LinAlgError("dgetri workspace query failed");
+    }
+
+    lwork = static_cast<int>(work_query);
+    std::vector<double> work(lwork);
+
+    // 역행렬 계산 (dgetri)
+    dgetri_(&n_int, a_col.data().data(), &n_int, ipiv.data(), work.data(), &lwork, &info);
+    if (info != 0) {
+        throw LinAlgError("dgetri failed: matrix is singular");
+    }
+
+    // column-major 결과를 row-major로 되돌림 (transpose)
+    return a_col.transpose();
+}
+#endif
 
 } // namespace detail
 
@@ -567,7 +679,24 @@ Matrix<T> inverse_schur(const Matrix<T>& matrix, std::size_t min_block = 32, T e
     }
 
     const std::size_t n = matrix.rows();
+
+    // ── 작은 행렬 (n ≤ 512) → LAPACK / LU로 직접 처리 ─────────────────
+    if (n <= 512) {
+#if LINX_HAS_BLAS
+        if constexpr (std::is_same<T, double>::value) {
+            return detail::inverse_lapack(matrix, eps);
+        }
+#endif
+        return inverse_lu(matrix, eps);
+    }
+
+    // ── base case: min_block 이하 or 홀수 → LU 분해 ────────────────────
     if (n <= min_block || n % 2 != 0) {
+#if LINX_HAS_BLAS
+        if constexpr (std::is_same<T, double>::value) {
+            return detail::inverse_lapack(matrix, eps);
+        }
+#endif
         return inverse_lu(matrix, eps);
     }
 
@@ -602,6 +731,14 @@ Matrix<T> inverse(const Matrix<T>& matrix, T eps = static_cast<T>(1e-12)) {
 
 template <typename T>
 T frobenius_norm(const Matrix<T>& matrix) {
+#if LINX_HAS_BLAS
+    if constexpr (std::is_same<T, double>::value) {
+        const vDSP_Length n = matrix.data().size();
+        double sum_sq = 0.0;
+        vDSP_svesqD(matrix.data().data(), 1, &sum_sq, n);
+        return static_cast<T>(std::sqrt(sum_sq));
+    }
+#endif
     T sum = T{};
     for (const auto& value : matrix.data()) {
         sum += value * value;

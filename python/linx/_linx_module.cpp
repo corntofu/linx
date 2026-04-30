@@ -258,6 +258,39 @@ PyObject* py_inverse_schur(PyObject*, PyObject* args, PyObject* kwargs) {
     }
 }
 
+PyObject* py_frobenius_norm(PyObject*, PyObject* args) {
+    PyObject* obj = nullptr;
+    if (!PyArg_ParseTuple(args, "O:frobenius_norm", &obj))
+        return nullptr;
+    try {
+        auto m = matrix_from_python(obj, "matrix");
+        double val = 0.0;
+        Py_BEGIN_ALLOW_THREADS
+        val = la::frobenius_norm(m);
+        Py_END_ALLOW_THREADS
+        return PyFloat_FromDouble(val);
+    } catch (const std::exception& e) {
+        return exception_to_python(e);
+    }
+}
+
+PyObject* py_residual_norm(PyObject*, PyObject* args) {
+    PyObject *mat = nullptr, *inv = nullptr;
+    if (!PyArg_ParseTuple(args, "OO:residual_norm", &mat, &inv))
+        return nullptr;
+    try {
+        auto m = matrix_from_python(mat, "matrix");
+        auto inv_m = matrix_from_python(inv, "inverse_matrix");
+        double val = 0.0;
+        Py_BEGIN_ALLOW_THREADS
+        val = la::residual_norm(m, inv_m);
+        Py_END_ALLOW_THREADS
+        return PyFloat_FromDouble(val);
+    } catch (const std::exception& e) {
+        return exception_to_python(e);
+    }
+}
+
 PyObject* py_condition_number(PyObject*, PyObject* args, PyObject* kwargs) {
     PyObject* matrix_object = nullptr;
     double eps = 1e-12;
@@ -314,18 +347,102 @@ PyObject* py_condition_number(PyObject*, PyObject* args, PyObject* kwargs) {
     }
 }
 
+PyObject* py_add(PyObject*, PyObject* args) {
+    PyObject *lhs = nullptr, *rhs = nullptr;
+    if (!PyArg_ParseTuple(args, "OO:add", &lhs, &rhs))
+        return nullptr;
+    try {
+        auto a = matrix_from_python(lhs, "lhs");
+        auto b = matrix_from_python(rhs, "rhs");
+        return run_matrix_kernel([&]() { return a + b; });
+    } catch (const std::exception& e) {
+        return exception_to_python(e);
+    }
+}
+
+PyObject* py_subtract(PyObject*, PyObject* args) {
+    PyObject *lhs = nullptr, *rhs = nullptr;
+    if (!PyArg_ParseTuple(args, "OO:subtract", &lhs, &rhs))
+        return nullptr;
+    try {
+        auto a = matrix_from_python(lhs, "lhs");
+        auto b = matrix_from_python(rhs, "rhs");
+        return run_matrix_kernel([&]() { return a - b; });
+    } catch (const std::exception& e) {
+        return exception_to_python(e);
+    }
+}
+
+PyObject* py_hadamard(PyObject*, PyObject* args) {
+    PyObject *lhs = nullptr, *rhs = nullptr;
+    if (!PyArg_ParseTuple(args, "OO:hadamard", &lhs, &rhs))
+        return nullptr;
+    try {
+        auto a = matrix_from_python(lhs, "lhs");
+        auto b = matrix_from_python(rhs, "rhs");
+        return run_matrix_kernel([&]() { return a.hadamard(b); });
+    } catch (const std::exception& e) {
+        return exception_to_python(e);
+    }
+}
+
+PyObject* py_scalar_mul(PyObject*, PyObject* args) {
+    PyObject* obj = nullptr;
+    double scalar = 1.0;
+    if (!PyArg_ParseTuple(args, "Od:scalar_mul", &obj, &scalar))
+        return nullptr;
+    try {
+        auto m = matrix_from_python(obj, "matrix");
+        return run_matrix_kernel([&]() { return m * scalar; });
+    } catch (const std::exception& e) {
+        return exception_to_python(e);
+    }
+}
+
+PyObject* py_transpose(PyObject*, PyObject* args) {
+    PyObject* obj = nullptr;
+    if (!PyArg_ParseTuple(args, "O:transpose", &obj))
+        return nullptr;
+    try {
+        auto m = matrix_from_python(obj, "matrix");
+        return run_matrix_kernel([&]() { return m.transpose(); });
+    } catch (const std::exception& e) {
+        return exception_to_python(e);
+    }
+}
+
+PyObject* py_neg(PyObject*, PyObject* args) {
+    PyObject* obj = nullptr;
+    if (!PyArg_ParseTuple(args, "O:neg", &obj))
+        return nullptr;
+    try {
+        auto m = matrix_from_python(obj, "matrix");
+        return run_matrix_kernel([&]() { return -m; });
+    } catch (const std::exception& e) {
+        return exception_to_python(e);
+    }
+}
+
 PyObject* py_hardware_backend(PyObject*, PyObject*) {
     return PyUnicode_FromString(la::hardware_backend().c_str());
 }
 
 PyMethodDef methods[] = {
-    {"matmul", py_matmul, METH_VARARGS, "Multiply two 2D arrays with the C++ linx backend."},
-    {"matmul_strassen", reinterpret_cast<PyCFunction>(py_matmul_strassen), METH_VARARGS | METH_KEYWORDS, "Multiply two 2D arrays with Strassen recursion."},
+    {"matmul", py_matmul, METH_VARARGS, "Multiply two matrices with linx backend."},
+    {"matmul_strassen", reinterpret_cast<PyCFunction>(py_matmul_strassen), METH_VARARGS | METH_KEYWORDS, "Multiply with Strassen algorithm."},
+    {"add", py_add, METH_VARARGS, "Element-wise addition (vDSP)."},
+    {"subtract", py_subtract, METH_VARARGS, "Element-wise subtraction (vDSP)."},
+    {"hadamard", py_hadamard, METH_VARARGS, "Element-wise multiplication (vDSP)."},
+    {"scalar_mul", py_scalar_mul, METH_VARARGS, "Scalar multiplication (vDSP)."},
+    {"transpose", py_transpose, METH_VARARGS, "Matrix transpose (vDSP)."},
+    {"neg", py_neg, METH_VARARGS, "Unary negation (vDSP)."},
     {"solve", py_solve, METH_VARARGS, "Solve A @ X = B."},
     {"inverse", reinterpret_cast<PyCFunction>(py_inverse), METH_VARARGS | METH_KEYWORDS, "Invert a matrix."},
-    {"inverse_schur", reinterpret_cast<PyCFunction>(py_inverse_schur), METH_VARARGS | METH_KEYWORDS, "Invert a matrix with the Schur complement algorithm."},
-    {"condition_number", reinterpret_cast<PyCFunction>(py_condition_number), METH_VARARGS | METH_KEYWORDS, "Estimate the Frobenius condition number."},
-    {"hardware_backend", py_hardware_backend, METH_NOARGS, "Return the compiled SIMD/thread backend."},
+    {"inverse_schur", reinterpret_cast<PyCFunction>(py_inverse_schur), METH_VARARGS | METH_KEYWORDS, "Invert with Schur complement."},
+    {"condition_number", reinterpret_cast<PyCFunction>(py_condition_number), METH_VARARGS | METH_KEYWORDS, "Frobenius condition number."},
+    {"frobenius_norm", py_frobenius_norm, METH_VARARGS, "Frobenius norm (vDSP)."},
+    {"residual_norm", py_residual_norm, METH_VARARGS, "Residual norm ||A @ A_inv - I||_F."},
+    {"hardware_backend", py_hardware_backend, METH_NOARGS, "Return the compiled backend."},
     {nullptr, nullptr, 0, nullptr}
 };
 
