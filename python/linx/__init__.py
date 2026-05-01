@@ -7,6 +7,7 @@ import numpy as np
 from ._linx import (
     add,
     condition_number,
+    det,
     frobenius_norm,
     hadamard,
     hardware_backend,
@@ -19,6 +20,7 @@ from ._linx import (
     scalar_mul,
     solve,
     subtract,
+    trace,
     transpose,
 )
 
@@ -27,6 +29,7 @@ __all__ = [
     "array",
     "arange",
     "condition_number",
+    "det",
     "eye",
     "frobenius_norm",
     "hardware_backend",
@@ -37,6 +40,7 @@ __all__ = [
     "ones",
     "residual_norm",
     "solve",
+    "trace",
     "zeros",
 ]
 

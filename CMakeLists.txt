@@ -21,8 +21,14 @@ target_include_directories(linx INTERFACE
 find_package(Threads REQUIRED)
 target_link_libraries(linx INTERFACE Threads::Threads)
 
+# ── macOS: Accelerate framework (BLAS/LAPACK + vDSP) ──────────────────────
+if(APPLE)
+    find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+    target_link_libraries(linx INTERFACE ${ACCELERATE_FRAMEWORK})
+endif()
+
 if(LINX_NATIVE_OPTIMIZATION AND (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU"))
-    target_compile_options(linx INTERFACE -O3 -march=native)
+    target_compile_options(linx INTERFACE -O3 -march=native -Wno-deprecated-declarations)
 endif()
 
 add_executable(linx_demo examples/demo.cpp)

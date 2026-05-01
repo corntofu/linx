@@ -427,6 +427,49 @@ PyObject* py_hardware_backend(PyObject*, PyObject*) {
     return PyUnicode_FromString(la::hardware_backend().c_str());
 }
 
+PyObject* py_trace(PyObject*, PyObject* args) {
+    PyObject* obj = nullptr;
+    if (!PyArg_ParseTuple(args, "O:trace", &obj))
+        return nullptr;
+    try {
+        auto m = matrix_from_python(obj, "matrix");
+        double val = 0.0;
+        Py_BEGIN_ALLOW_THREADS
+        val = la::trace(m);
+        Py_END_ALLOW_THREADS
+        return PyFloat_FromDouble(val);
+    } catch (const std::exception& e) {
+        return exception_to_python(e);
+    }
+}
+
+PyObject* py_det(PyObject*, PyObject* args, PyObject* kwargs) {
+    PyObject* matrix_object = nullptr;
+    double eps = 1e-12;
+
+    static const char* kwlist[] = {"matrix", "eps", nullptr};
+    if (!PyArg_ParseTupleAndKeywords(
+            args,
+            kwargs,
+            "O|d:det",
+            const_cast<char**>(kwlist),
+            &matrix_object,
+            &eps)) {
+        return nullptr;
+    }
+
+    try {
+        auto matrix = matrix_from_python(matrix_object, "matrix");
+        double val = 0.0;
+        Py_BEGIN_ALLOW_THREADS
+        val = la::det(matrix, eps);
+        Py_END_ALLOW_THREADS
+        return PyFloat_FromDouble(val);
+    } catch (const std::exception& error) {
+        return exception_to_python(error);
+    }
+}
+
 PyMethodDef methods[] = {
     {"matmul", py_matmul, METH_VARARGS, "Multiply two matrices with linx backend."},
     {"matmul_strassen", reinterpret_cast<PyCFunction>(py_matmul_strassen), METH_VARARGS | METH_KEYWORDS, "Multiply with Strassen algorithm."},
@@ -443,6 +486,8 @@ PyMethodDef methods[] = {
     {"frobenius_norm", py_frobenius_norm, METH_VARARGS, "Frobenius norm (vDSP)."},
     {"residual_norm", py_residual_norm, METH_VARARGS, "Residual norm ||A @ A_inv - I||_F."},
     {"hardware_backend", py_hardware_backend, METH_NOARGS, "Return the compiled backend."},
+    {"trace", py_trace, METH_VARARGS, "Trace of a square matrix."},
+    {"det", reinterpret_cast<PyCFunction>(py_det), METH_VARARGS | METH_KEYWORDS, "Determinant of a square matrix (LU via LAPACK)."},
     {nullptr, nullptr, 0, nullptr}
 };
 
