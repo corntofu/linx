@@ -137,11 +137,18 @@ def bench_matmul_classic_strassen(quick=False):
 
 def bench_inverse(quick=False):
     print("\n" + "=" * 72)
-    print("  INVERSE  —  linx (schur) vs NumPy (np.linalg.inv)")
+    print("  INVERSE  —  linx Schur variants vs NumPy (np.linalg.inv)")
     print("=" * 72)
 
     sizes = SIZES_QUICK if quick else SIZES_FULL
-    headers = ["Size", "NumPy (inv)", "linx (schur)", "linx (lu)", "NumPy/linx(schur)"]
+    headers = [
+        "Size",
+        "NumPy (inv)",
+        "linx (schur)",
+        "schur+strassen",
+        "linx (lu)",
+        "NumPy/schur",
+    ]
     rows = []
 
     for name in sizes:
@@ -155,10 +162,23 @@ def bench_inverse(quick=False):
 
         t_np, _ = timed(np.linalg.inv, (a_np,), reps=reps)
         t_schur, _ = timed(linx.inverse, (a_linx,), kwargs={"method": "schur"}, reps=reps)
+        t_schur_strassen, _ = timed(
+            linx.inverse_schur_strassen,
+            (a_linx,),
+            kwargs={"min_block": 1024, "strassen_threshold": 4096},
+            reps=reps,
+        )
         t_lu, _ = timed(linx.inverse, (a_linx,), kwargs={"method": "lu"}, reps=reps)
 
         ratio = t_np / t_schur if t_schur > 0 else float("inf")
-        rows.append([name, fmt_time(t_np), fmt_time(t_schur), fmt_time(t_lu), f"{ratio:.2f}x"])
+        rows.append([
+            name,
+            fmt_time(t_np),
+            fmt_time(t_schur),
+            fmt_time(t_schur_strassen),
+            fmt_time(t_lu),
+            f"{ratio:.2f}x",
+        ])
 
     print_table(headers, rows)
 
@@ -346,7 +366,10 @@ def main():
     print("  linx vs NumPy — Performance Benchmark")
     print("=" * 72)
     backend = linx.hardware_backend()
-    matmul_dispatch = "C++ BLAS" if ("BLAS" in backend or "Accelerate" in backend) else "NumPy BLAS fallback"
+    if "BLAS" in backend or "Accelerate" in backend:
+        matmul_dispatch = "C++ BLAS; C++ Strassen for square n > 4096"
+    else:
+        matmul_dispatch = "NumPy BLAS fallback; C++ Strassen for square n > 4096"
     print(f"  Backend: {backend}")
     print(f"  matmul dispatch: {matmul_dispatch}")
     print(f"  linx package: {Path(linx.__file__).resolve()}")

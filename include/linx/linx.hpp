@@ -47,14 +47,18 @@
   #define LINX_M2_L1_BYTES     131072
   #define LINX_M2_P_CORES      4
   #define LINX_M2_UNROLL       8     // unroll factor for NEON matmul micro‑kernel
-  #define LINX_M2_STRASSEN_MIN 2048  // use Strassen for N ≥ 2048
+  #define LINX_M2_STRASSEN_MIN 4096  // use Strassen for N > 4096
+  #define LINX_M2_STRASSEN_BASE 4096
+  #define LINX_LAPACK_INVERSE_MAX 1024
 #else
   #define LINX_M2_TILE_ROWS    32
   #define LINX_M2_TILE_COLS    128
   #define LINX_M2_L1_BYTES     32768
   #define LINX_M2_P_CORES      2
   #define LINX_M2_UNROLL       4
-  #define LINX_M2_STRASSEN_MIN 128
+  #define LINX_M2_STRASSEN_MIN 4096
+  #define LINX_M2_STRASSEN_BASE 4096
+  #define LINX_LAPACK_INVERSE_MAX 1024
 #endif
 
 namespace la {
@@ -689,6 +693,216 @@ Matrix<T> strassen_square(const Matrix<T>& lhs, const Matrix<T>& rhs, std::size_
     return out;
 }
 
+inline std::size_t strassen_effective_threshold(std::size_t threshold) {
+    return std::max(threshold, static_cast<std::size_t>(LINX_M2_STRASSEN_BASE));
+}
+
+struct ConstMatrixViewD {
+    const double* data = nullptr;
+    std::size_t stride = 0;
+};
+
+struct MatrixViewD {
+    double* data = nullptr;
+    std::size_t stride = 0;
+};
+
+inline ConstMatrixViewD subview(ConstMatrixViewD view, std::size_t row, std::size_t col) {
+    return {view.data + row * view.stride + col, view.stride};
+}
+
+inline MatrixViewD subview(MatrixViewD view, std::size_t row, std::size_t col) {
+    return {view.data + row * view.stride + col, view.stride};
+}
+
+inline void add_view(double* dst, ConstMatrixViewD lhs, ConstMatrixViewD rhs,
+                     std::size_t n, bool subtract_rhs = false) {
+#if LINX_HAS_BLAS
+    for (std::size_t r = 0; r < n; ++r) {
+        const double* lhs_row = lhs.data + r * lhs.stride;
+        const double* rhs_row = rhs.data + r * rhs.stride;
+        double* dst_row = dst + r * n;
+        if (subtract_rhs) {
+            vDSP_vsubD(rhs_row, 1, lhs_row, 1, dst_row, 1, static_cast<vDSP_Length>(n));
+        } else {
+            vDSP_vaddD(lhs_row, 1, rhs_row, 1, dst_row, 1, static_cast<vDSP_Length>(n));
+        }
+    }
+#else
+    for (std::size_t r = 0; r < n; ++r) {
+        const double* lhs_row = lhs.data + r * lhs.stride;
+        const double* rhs_row = rhs.data + r * rhs.stride;
+        double* dst_row = dst + r * n;
+        if (subtract_rhs) {
+            for (std::size_t c = 0; c < n; ++c) dst_row[c] = lhs_row[c] - rhs_row[c];
+        } else {
+            for (std::size_t c = 0; c < n; ++c) dst_row[c] = lhs_row[c] + rhs_row[c];
+        }
+    }
+#endif
+}
+
+inline void gemm_view(ConstMatrixViewD lhs, ConstMatrixViewD rhs, MatrixViewD out, std::size_t n) {
+#if LINX_HAS_BLAS
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                static_cast<int>(n), static_cast<int>(n), static_cast<int>(n),
+                1.0, lhs.data, static_cast<int>(lhs.stride),
+                rhs.data, static_cast<int>(rhs.stride),
+                0.0, out.data, static_cast<int>(out.stride));
+#else
+    for (std::size_t r = 0; r < n; ++r) {
+        double* out_row = out.data + r * out.stride;
+        for (std::size_t c = 0; c < n; ++c) {
+            out_row[c] = 0.0;
+        }
+        for (std::size_t k = 0; k < n; ++k) {
+            const double a = lhs.data[r * lhs.stride + k];
+            const double* rhs_row = rhs.data + k * rhs.stride;
+            for (std::size_t c = 0; c < n; ++c) {
+                out_row[c] += a * rhs_row[c];
+            }
+        }
+    }
+#endif
+}
+
+inline void zero_view(MatrixViewD out, std::size_t n) {
+    for (std::size_t r = 0; r < n; ++r) {
+        std::memset(out.data + r * out.stride, 0, n * sizeof(double));
+    }
+}
+
+inline void accumulate_view(MatrixViewD dst, ConstMatrixViewD src, std::size_t n, double alpha) {
+#if LINX_HAS_BLAS
+    for (std::size_t r = 0; r < n; ++r) {
+        double* dst_row = dst.data + r * dst.stride;
+        const double* src_row = src.data + r * src.stride;
+        if (alpha > 0.0) {
+            vDSP_vaddD(dst_row, 1, src_row, 1, dst_row, 1, static_cast<vDSP_Length>(n));
+        } else {
+            vDSP_vsubD(src_row, 1, dst_row, 1, dst_row, 1, static_cast<vDSP_Length>(n));
+        }
+    }
+#else
+    for (std::size_t r = 0; r < n; ++r) {
+        double* dst_row = dst.data + r * dst.stride;
+        const double* src_row = src.data + r * src.stride;
+        if (alpha > 0.0) {
+            for (std::size_t c = 0; c < n; ++c) dst_row[c] += src_row[c];
+        } else {
+            for (std::size_t c = 0; c < n; ++c) dst_row[c] -= src_row[c];
+        }
+    }
+#endif
+}
+
+inline void combine_strassen_quadrants(MatrixViewD out,
+                                       ConstMatrixViewD p1, ConstMatrixViewD p2,
+                                       ConstMatrixViewD p3, ConstMatrixViewD p4,
+                                       ConstMatrixViewD p5, ConstMatrixViewD p6,
+                                       ConstMatrixViewD p7,
+                                       std::size_t h) {
+    for (std::size_t r = 0; r < h; ++r) {
+        const double* p1_row = p1.data + r * p1.stride;
+        const double* p2_row = p2.data + r * p2.stride;
+        const double* p3_row = p3.data + r * p3.stride;
+        const double* p4_row = p4.data + r * p4.stride;
+        const double* p5_row = p5.data + r * p5.stride;
+        const double* p6_row = p6.data + r * p6.stride;
+        const double* p7_row = p7.data + r * p7.stride;
+        double* c11 = out.data + r * out.stride;
+        double* c12 = c11 + h;
+        double* c21 = out.data + (r + h) * out.stride;
+        double* c22 = c21 + h;
+
+        for (std::size_t c = 0; c < h; ++c) {
+            c11[c] = p5_row[c] + p4_row[c] - p2_row[c] + p6_row[c];
+            c12[c] = p1_row[c] + p2_row[c];
+            c21[c] = p3_row[c] + p4_row[c];
+            c22[c] = p1_row[c] + p5_row[c] - p3_row[c] - p7_row[c];
+        }
+    }
+}
+
+inline void strassen_view(ConstMatrixViewD lhs, ConstMatrixViewD rhs,
+                          MatrixViewD out, std::size_t n, std::size_t threshold) {
+    if (n <= threshold || n % 2 != 0) {
+        gemm_view(lhs, rhs, out, n);
+        return;
+    }
+
+    const std::size_t h = n / 2;
+    const auto a11 = subview(lhs, 0, 0);
+    const auto a12 = subview(lhs, 0, h);
+    const auto a21 = subview(lhs, h, 0);
+    const auto a22 = subview(lhs, h, h);
+    const auto b11 = subview(rhs, 0, 0);
+    const auto b12 = subview(rhs, 0, h);
+    const auto b21 = subview(rhs, h, 0);
+    const auto b22 = subview(rhs, h, h);
+    const auto c11 = subview(out, 0, 0);
+    const auto c12 = subview(out, 0, h);
+    const auto c21 = subview(out, h, 0);
+    const auto c22 = subview(out, h, h);
+
+    std::vector<double> s1(h * h);
+    std::vector<double> s2(h * h);
+    std::vector<double> product(h * h);
+
+    const ConstMatrixViewD s1_view{s1.data(), h};
+    const ConstMatrixViewD s2_view{s2.data(), h};
+    const MatrixViewD product_view{product.data(), h};
+    const ConstMatrixViewD product_const{product.data(), h};
+
+    zero_view(out, n);
+
+    add_view(s1.data(), b12, b22, h, true);
+    strassen_view(a11, s1_view, product_view, h, threshold);
+    accumulate_view(c12, product_const, h, 1.0);
+    accumulate_view(c22, product_const, h, 1.0);
+
+    add_view(s1.data(), a11, a12, h);
+    strassen_view(s1_view, b22, product_view, h, threshold);
+    accumulate_view(c11, product_const, h, -1.0);
+    accumulate_view(c12, product_const, h, 1.0);
+
+    add_view(s1.data(), a21, a22, h);
+    strassen_view(s1_view, b11, product_view, h, threshold);
+    accumulate_view(c21, product_const, h, 1.0);
+    accumulate_view(c22, product_const, h, -1.0);
+
+    add_view(s1.data(), b21, b11, h, true);
+    strassen_view(a22, s1_view, product_view, h, threshold);
+    accumulate_view(c11, product_const, h, 1.0);
+    accumulate_view(c21, product_const, h, 1.0);
+
+    add_view(s1.data(), a11, a22, h);
+    add_view(s2.data(), b11, b22, h);
+    strassen_view(s1_view, s2_view, product_view, h, threshold);
+    accumulate_view(c11, product_const, h, 1.0);
+    accumulate_view(c22, product_const, h, 1.0);
+
+    add_view(s1.data(), a12, a22, h, true);
+    add_view(s2.data(), b21, b22, h);
+    strassen_view(s1_view, s2_view, product_view, h, threshold);
+    accumulate_view(c11, product_const, h, 1.0);
+
+    add_view(s1.data(), a11, a21, h, true);
+    add_view(s2.data(), b11, b12, h);
+    strassen_view(s1_view, s2_view, product_view, h, threshold);
+    accumulate_view(c22, product_const, h, -1.0);
+}
+
+inline Matrix<double> strassen_square_fast(const Matrix<double>& lhs,
+                                           const Matrix<double>& rhs,
+                                           std::size_t threshold) {
+    const std::size_t n = lhs.rows();
+    Matrix<double> out(n, n);
+    strassen_view({lhs.data().data(), n}, {rhs.data().data(), n},
+                  {out.data().data(), n}, n, strassen_effective_threshold(threshold));
+    return out;
+}
+
 
 // ── LAPACK을 이용한 빠른 역행렬 (double, Apple Accelerate) ──────────────
 #if LINX_HAS_BLAS
@@ -743,23 +957,44 @@ Matrix<T> matmul_strassen(const Matrix<T>& lhs, const Matrix<T>& rhs, std::size_
         throw ShapeError("matmul requires lhs.cols == rhs.rows");
     }
 
-    const std::size_t size = detail::next_power_of_two(
-        std::max({lhs.rows(), lhs.cols(), rhs.cols(), std::size_t{1}})
-    );
+    if constexpr (std::is_same<T, double>::value) {
+        std::size_t size = std::max({lhs.rows(), lhs.cols(), rhs.cols(), std::size_t{1}});
+        const std::size_t cutoff = detail::strassen_effective_threshold(threshold);
+        if (size <= cutoff) {
+            return matmul_classic(lhs, rhs);
+        }
+        if (lhs.rows() == size && lhs.cols() == size &&
+            rhs.rows() == size && rhs.cols() == size &&
+            size % 2 == 0) {
+            return detail::strassen_square_fast(lhs, rhs, cutoff);
+        }
+        if (size % 2 != 0) {
+            ++size;
+        }
 
-    const auto padded_lhs = detail::pad_square(lhs, size);
-    const auto padded_rhs = detail::pad_square(rhs, size);
-    return detail::strassen_square(padded_lhs, padded_rhs, threshold)
-        .block(0, 0, lhs.rows(), rhs.cols());
+        const auto padded_lhs = detail::pad_square(lhs, size);
+        const auto padded_rhs = detail::pad_square(rhs, size);
+        return detail::strassen_square_fast(padded_lhs, padded_rhs, cutoff)
+            .block(0, 0, lhs.rows(), rhs.cols());
+    } else {
+        const std::size_t size = detail::next_power_of_two(
+            std::max({lhs.rows(), lhs.cols(), rhs.cols(), std::size_t{1}})
+        );
+
+        const auto padded_lhs = detail::pad_square(lhs, size);
+        const auto padded_rhs = detail::pad_square(rhs, size);
+        return detail::strassen_square(padded_lhs, padded_rhs, threshold)
+            .block(0, 0, lhs.rows(), rhs.cols());
+    }
 }
 
 template <typename T>
 Matrix<T> matmul(const Matrix<T>& lhs, const Matrix<T>& rhs) {
-    // Square matrices with N ≥ LINX_M2_STRASSEN_MIN use Strassen
+    // Square matrices with N > LINX_M2_STRASSEN_MIN use Strassen
     if (lhs.rows() == lhs.cols() && rhs.rows() == rhs.cols()
         && lhs.cols() == rhs.rows()
-        && lhs.rows() >= static_cast<std::size_t>(LINX_M2_STRASSEN_MIN)) {
-        return matmul_strassen(lhs, rhs);
+        && lhs.rows() > static_cast<std::size_t>(LINX_M2_STRASSEN_MIN)) {
+        return matmul_strassen(lhs, rhs, LINX_M2_STRASSEN_BASE);
     }
     return matmul_classic(lhs, rhs);
 }
@@ -871,8 +1106,8 @@ Matrix<T> inverse_schur(const Matrix<T>& matrix, std::size_t min_block = 32, T e
 
     const std::size_t n = matrix.rows();
 
-    // ── 작은 행렬 (n ≤ 512) → LAPACK / LU로 직접 처리 ─────────────────
-    if (n <= 512) {
+    // ── 작은/중간 행렬은 LAPACK / LU로 직접 처리 ─────────────────
+    if (n <= static_cast<std::size_t>(LINX_LAPACK_INVERSE_MAX)) {
 #if LINX_HAS_BLAS
         if constexpr (std::is_same<T, double>::value) {
             return detail::inverse_lapack(matrix, eps);
@@ -916,6 +1151,56 @@ Matrix<T> inverse_schur(const Matrix<T>& matrix, std::size_t min_block = 32, T e
 }
 
 template <typename T>
+Matrix<T> inverse_schur_strassen(const Matrix<T>& matrix,
+                                 std::size_t min_block = static_cast<std::size_t>(LINX_LAPACK_INVERSE_MAX),
+                                 std::size_t strassen_threshold = static_cast<std::size_t>(LINX_M2_STRASSEN_BASE),
+                                 T eps = static_cast<T>(1e-12)) {
+    if (!matrix.square()) {
+        throw ShapeError("inverse_schur_strassen requires a square matrix");
+    }
+
+    const std::size_t n = matrix.rows();
+    const std::size_t block = std::max(min_block, std::size_t{1});
+
+    if (n <= block || n % 2 != 0) {
+#if LINX_HAS_BLAS
+        if constexpr (std::is_same<T, double>::value) {
+            return detail::inverse_lapack(matrix, eps);
+        }
+#endif
+        return inverse_lu(matrix, eps);
+    }
+
+    auto multiply = [strassen_threshold](const Matrix<T>& lhs, const Matrix<T>& rhs) {
+        return matmul_strassen(lhs, rhs, strassen_threshold);
+    };
+
+    const std::size_t h = n / 2;
+    const auto a = matrix.block(0, 0, h, h);
+    const auto b = matrix.block(0, h, h, h);
+    const auto c = matrix.block(h, 0, h, h);
+    const auto d = matrix.block(h, h, h, h);
+
+    const auto a_inv = inverse_schur_strassen(a, block, strassen_threshold, eps);
+    const auto ca_inv = multiply(c, a_inv);
+    const auto schur = d - multiply(ca_inv, b);
+    const auto s_inv = inverse_schur_strassen(schur, block, strassen_threshold, eps);
+
+    const auto a_inv_b = multiply(a_inv, b);
+    const auto a_inv_b_s_inv = multiply(a_inv_b, s_inv);
+    const auto top_left = a_inv + multiply(a_inv_b_s_inv, ca_inv);
+    const auto top_right = -a_inv_b_s_inv;
+    const auto bottom_left = -multiply(s_inv, ca_inv);
+
+    Matrix<T> out(n, n);
+    out.set_block(0, 0, top_left);
+    out.set_block(0, h, top_right);
+    out.set_block(h, 0, bottom_left);
+    out.set_block(h, h, s_inv);
+    return out;
+}
+
+template <typename T>
 Matrix<T> inverse(const Matrix<T>& matrix, T eps = static_cast<T>(1e-12)) {
     return inverse_schur(matrix, 32, eps);
 }
@@ -924,9 +1209,13 @@ template <typename T>
 T frobenius_norm(const Matrix<T>& matrix) {
 #if LINX_HAS_BLAS
     if constexpr (std::is_same<T, double>::value) {
-        const vDSP_Length n = matrix.data().size();
+        const auto n = matrix.data().size();
         double sum_sq = 0.0;
-        vDSP_svesqD(matrix.data().data(), 1, &sum_sq, n);
+        if (n <= static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+            sum_sq = cblas_ddot(static_cast<int>(n), matrix.data().data(), 1, matrix.data().data(), 1);
+        } else {
+            vDSP_svesqD(matrix.data().data(), 1, &sum_sq, static_cast<vDSP_Length>(n));
+        }
         return static_cast<T>(std::sqrt(sum_sq));
     }
 #endif

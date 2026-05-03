@@ -31,6 +31,14 @@ def test_inverse():
     )
     inv = linx.inverse_schur(a, min_block=2)
     np.testing.assert_allclose(a @ inv, np.eye(4), rtol=1e-8, atol=1e-8)
+    inv_strassen = linx.inverse_schur_strassen(a, min_block=2, strassen_threshold=2)
+    np.testing.assert_allclose(a @ inv_strassen, np.eye(4), rtol=1e-8, atol=1e-8)
+    np.testing.assert_allclose(
+        linx.inverse(a, method="schur_strassen", min_block=2),
+        np.linalg.inv(a),
+        rtol=1e-8,
+        atol=1e-8,
+    )
 
 
 def test_solve():
@@ -74,6 +82,8 @@ def test_matrix_ops():
     # inverse
     invA = A.inv()
     np.testing.assert_allclose((A @ invA).data, np.eye(2), rtol=1e-8, atol=1e-8)
+    invA_strassen = A.inv_schur_strassen(min_block=2, strassen_threshold=2)
+    np.testing.assert_allclose((A @ invA_strassen).data, np.eye(2), rtol=1e-8, atol=1e-8)
 
     # norms
     assert A.frobenius_norm() > 0

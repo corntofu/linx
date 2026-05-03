@@ -12,6 +12,7 @@ frobenius_norm = _backend.frobenius_norm
 hardware_backend = _backend.hardware_backend
 inverse = _backend.inverse
 inverse_schur = _backend.inverse_schur
+inverse_schur_strassen = _backend.inverse_schur_strassen
 matmul_strassen = _backend.matmul_strassen
 residual_norm = _backend.residual_norm
 solve = _backend.solve
@@ -20,6 +21,7 @@ trace = _backend.trace
 _cpp_matmul = _backend.matmul
 _BACKEND_NAME = hardware_backend()
 _HAS_FAST_CPP_MATMUL = "BLAS" in _BACKEND_NAME or "Accelerate" in _BACKEND_NAME
+_STRASSEN_MIN_N = 4096
 
 
 def add(lhs, rhs):
@@ -67,7 +69,13 @@ def matmul(lhs, rhs):
     """
     lhs_arr = _as_array(lhs)
     rhs_arr = _as_array(rhs)
-    if _HAS_FAST_CPP_MATMUL:
+    use_auto_strassen = (
+        lhs_arr.ndim == 2
+        and rhs_arr.ndim == 2
+        and lhs_arr.shape[0] == lhs_arr.shape[1] == rhs_arr.shape[0] == rhs_arr.shape[1]
+        and lhs_arr.shape[0] > _STRASSEN_MIN_N
+    )
+    if _HAS_FAST_CPP_MATMUL or use_auto_strassen:
         return _cpp_matmul(lhs_arr, rhs_arr)
     return np.matmul(lhs_arr, rhs_arr)
 
@@ -84,6 +92,7 @@ __all__ = [
     "hardware_backend",
     "inverse",
     "inverse_schur",
+    "inverse_schur_strassen",
     "matmul",
     "matmul_strassen",
     "neg",
@@ -212,6 +221,12 @@ class Matrix:
         """Inverse matrix using C++ linx backend."""
         return Matrix(inverse(self._data, method=method, min_block=min_block,
                               regularization=regularization, eps=eps))
+
+    def inv_schur_strassen(self, min_block=1024, strassen_threshold=4096, eps=1e-12):
+        """Inverse matrix using Schur complement with Strassen block multiplies."""
+        return Matrix(inverse_schur_strassen(self._data, min_block=min_block,
+                                             strassen_threshold=strassen_threshold,
+                                             eps=eps))
 
     def solve(self, b):
         """Solve A @ X = B."""
