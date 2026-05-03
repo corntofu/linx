@@ -3,6 +3,7 @@
 Usage:
     python tests/benchmark_linx_vs_numpy.py
     python tests/benchmark_linx_vs_numpy.py --quick   # smaller matrices, fewer repetitions
+    python tests/benchmark_linx_vs_numpy.py --only-inverse --include-inverse-8192
 """
 
 import argparse
@@ -69,6 +70,7 @@ def print_table(headers, rows):
 
 SIZES_QUICK = ["64x64", "256x256"]
 SIZES_FULL = ["64x64", "256x256", "512x512", "1024x1024", "2048x2048"]
+INVERSE_EXTREME_SIZE = "8192x8192"
 
 MATMUL_SIZES_QUICK = [("64x64", 64, 64, 64)]
 MATMUL_SIZES_FULL = [
@@ -135,12 +137,28 @@ def bench_matmul_classic_strassen(quick=False):
     print_table(headers, rows)
 
 
-def bench_inverse(quick=False):
+def make_inverse_input(n):
+    a_np = np.random.randn(n, n).astype(np.float64)
+    if n >= 4096:
+        # Avoid the extra O(n^3) setup cost and memory spike of A @ A.T for
+        # extreme inverse benchmarks; diagonal dominance keeps the input stable.
+        a_np *= 1.0 / math.sqrt(n)
+        diag = np.arange(n)
+        a_np[diag, diag] += 4.0
+        return a_np
+    return a_np @ a_np.T + np.eye(n, dtype=np.float64) * 0.1
+
+
+def bench_inverse(quick=False, include_8192=False):
     print("\n" + "=" * 72)
     print("  INVERSE  —  linx Schur variants vs NumPy (np.linalg.inv)")
     print("=" * 72)
 
-    sizes = SIZES_QUICK if quick else SIZES_FULL
+    sizes = list(SIZES_QUICK if quick else SIZES_FULL)
+    if include_8192 and INVERSE_EXTREME_SIZE not in sizes:
+        sizes.append(INVERSE_EXTREME_SIZE)
+        print("  Note: 8192x8192 measures Schur variants only; NumPy/LU are skipped.")
+
     headers = [
         "Size",
         "NumPy (inv)",
@@ -153,31 +171,49 @@ def bench_inverse(quick=False):
 
     for name in sizes:
         n, _ = parse_shape(name)
-        a_np = np.random.randn(n, n).astype(np.float64)
-        # Make well-conditioned
-        a_np = a_np @ a_np.T + np.eye(n) * 0.1
-        a_linx = a_np.copy()
+        a_np = make_inverse_input(n)
+        a_linx = a_np if n >= 4096 else a_np.copy()
 
-        reps = 3 if n >= 512 else 5
+        is_extreme = n >= 4096
+        reps = 1 if is_extreme else (3 if n >= 512 else 5)
+        warmup = 0 if is_extreme else 2
 
-        t_np, _ = timed(np.linalg.inv, (a_np,), reps=reps)
-        t_schur, _ = timed(linx.inverse, (a_linx,), kwargs={"method": "schur"}, reps=reps)
+        t_np = None
+        t_lu = None
+        if not is_extreme:
+            t_np, _ = timed(np.linalg.inv, (a_np,), reps=reps, warmup=warmup)
+
+        t_schur, _ = timed(
+            linx.inverse,
+            (a_linx,),
+            kwargs={"method": "schur"},
+            reps=reps,
+            warmup=warmup,
+        )
         t_schur_strassen, _ = timed(
             linx.inverse_schur_strassen,
             (a_linx,),
             kwargs={"min_block": 1024, "strassen_threshold": 4096},
             reps=reps,
+            warmup=warmup,
         )
-        t_lu, _ = timed(linx.inverse, (a_linx,), kwargs={"method": "lu"}, reps=reps)
+        if not is_extreme:
+            t_lu, _ = timed(
+                linx.inverse,
+                (a_linx,),
+                kwargs={"method": "lu"},
+                reps=reps,
+                warmup=warmup,
+            )
 
-        ratio = t_np / t_schur if t_schur > 0 else float("inf")
+        ratio = t_np / t_schur if t_np is not None and t_schur > 0 else None
         rows.append([
             name,
-            fmt_time(t_np),
+            fmt_time(t_np) if t_np is not None else "skipped",
             fmt_time(t_schur),
             fmt_time(t_schur_strassen),
-            fmt_time(t_lu),
-            f"{ratio:.2f}x",
+            fmt_time(t_lu) if t_lu is not None else "skipped",
+            f"{ratio:.2f}x" if ratio is not None else "-",
         ])
 
     print_table(headers, rows)
@@ -360,6 +396,12 @@ def bench_matrix_class(quick=False):
 def main():
     parser = argparse.ArgumentParser(description="Benchmark linx C++ vs NumPy")
     parser.add_argument("--quick", action="store_true", help="Quick mode (smaller matrices, fewer reps)")
+    parser.add_argument("--only-inverse", action="store_true", help="Run only inverse benchmarks")
+    parser.add_argument(
+        "--include-inverse-8192",
+        action="store_true",
+        help="Include an extreme 8192x8192 Schur inverse benchmark",
+    )
     args = parser.parse_args()
 
     print("=" * 72)
@@ -377,9 +419,16 @@ def main():
     print(f"  Mode: {'QUICK' if args.quick else 'FULL'}")
     print("=" * 72)
 
+    if args.only_inverse:
+        bench_inverse(quick=args.quick, include_8192=args.include_inverse_8192)
+        print("\n" + "=" * 72)
+        print("  Benchmark complete.")
+        print("=" * 72 + "\n")
+        return
+
     bench_matmul(quick=args.quick)
     bench_matmul_classic_strassen(quick=args.quick)
-    bench_inverse(quick=args.quick)
+    bench_inverse(quick=args.quick, include_8192=args.include_inverse_8192)
     bench_elementwise(quick=args.quick)
     bench_transpose(quick=args.quick)
     bench_solve(quick=args.quick)
