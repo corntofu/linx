@@ -5,6 +5,7 @@
 #include <numpy/arrayobject.h>
 
 #include <exception>
+#include <limits>
 #include <string>
 
 #include "linx/linx.hpp"
@@ -129,6 +130,51 @@ PyObject* py_matmul(PyObject*, PyObject* args) {
         return nullptr;
     }
 
+#if LINX_HAS_BLAS
+    PyArrayHandle lhs_array(lhs_object);
+    PyArrayHandle rhs_array(rhs_object);
+    if (lhs_array.ptr == nullptr || rhs_array.ptr == nullptr) {
+        return nullptr;
+    }
+    if (PyArray_NDIM(lhs_array.ptr) != 2 || PyArray_NDIM(rhs_array.ptr) != 2) {
+        PyErr_SetString(PyExc_ValueError, "matmul arguments must be 2D arrays");
+        return nullptr;
+    }
+
+    const npy_intp rows = PyArray_DIM(lhs_array.ptr, 0);
+    const npy_intp inner = PyArray_DIM(lhs_array.ptr, 1);
+    const npy_intp rhs_rows = PyArray_DIM(rhs_array.ptr, 0);
+    const npy_intp cols = PyArray_DIM(rhs_array.ptr, 1);
+    if (inner != rhs_rows) {
+        PyErr_SetString(PyExc_ValueError, "matmul requires lhs.cols == rhs.rows");
+        return nullptr;
+    }
+    if (rows > static_cast<npy_intp>(std::numeric_limits<int>::max()) ||
+        inner > static_cast<npy_intp>(std::numeric_limits<int>::max()) ||
+        cols > static_cast<npy_intp>(std::numeric_limits<int>::max())) {
+        PyErr_SetString(PyExc_ValueError, "matmul dimensions exceed BLAS int limits");
+        return nullptr;
+    }
+
+    npy_intp dims[2] = {rows, cols};
+    PyObject* out = PyArray_SimpleNew(2, dims, NPY_DOUBLE);
+    if (out == nullptr) {
+        return nullptr;
+    }
+
+    const auto* lhs = static_cast<const double*>(PyArray_DATA(lhs_array.ptr));
+    const auto* rhs = static_cast<const double*>(PyArray_DATA(rhs_array.ptr));
+    auto* dst = static_cast<double*>(PyArray_DATA(reinterpret_cast<PyArrayObject*>(out)));
+
+    Py_BEGIN_ALLOW_THREADS
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                static_cast<int>(rows), static_cast<int>(cols), static_cast<int>(inner),
+                1.0, lhs, static_cast<int>(inner),
+                rhs, static_cast<int>(cols),
+                0.0, dst, static_cast<int>(cols));
+    Py_END_ALLOW_THREADS
+    return out;
+#else
     try {
         auto lhs = matrix_from_python(lhs_object, "lhs");
         auto rhs = matrix_from_python(rhs_object, "rhs");
@@ -138,6 +184,7 @@ PyObject* py_matmul(PyObject*, PyObject* args) {
     } catch (const std::exception& error) {
         return exception_to_python(error);
     }
+#endif
 }
 
 PyObject* py_matmul_strassen(PyObject*, PyObject* args, PyObject* kwargs) {

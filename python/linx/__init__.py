@@ -4,43 +4,96 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._linx import (
-    add,
-    condition_number,
-    det,
-    frobenius_norm,
-    hadamard,
-    hardware_backend,
-    inverse,
-    inverse_schur,
-    matmul,
-    matmul_strassen,
-    neg,
-    residual_norm,
-    scalar_mul,
-    solve,
-    subtract,
-    trace,
-    transpose,
-)
+from . import _linx as _backend
+
+condition_number = _backend.condition_number
+det = _backend.det
+frobenius_norm = _backend.frobenius_norm
+hardware_backend = _backend.hardware_backend
+inverse = _backend.inverse
+inverse_schur = _backend.inverse_schur
+matmul_strassen = _backend.matmul_strassen
+residual_norm = _backend.residual_norm
+solve = _backend.solve
+trace = _backend.trace
+
+_cpp_matmul = _backend.matmul
+_BACKEND_NAME = hardware_backend()
+_HAS_FAST_CPP_MATMUL = "BLAS" in _BACKEND_NAME or "Accelerate" in _BACKEND_NAME
+
+
+def add(lhs, rhs):
+    if hasattr(_backend, "add"):
+        return _backend.add(lhs, rhs)
+    return _as_array(lhs) + _as_array(rhs)
+
+
+def subtract(lhs, rhs):
+    if hasattr(_backend, "subtract"):
+        return _backend.subtract(lhs, rhs)
+    return _as_array(lhs) - _as_array(rhs)
+
+
+def hadamard(lhs, rhs):
+    if hasattr(_backend, "hadamard"):
+        return _backend.hadamard(lhs, rhs)
+    return _as_array(lhs) * _as_array(rhs)
+
+
+def scalar_mul(matrix, scalar):
+    if hasattr(_backend, "scalar_mul"):
+        return _backend.scalar_mul(matrix, scalar)
+    return _as_array(matrix) * float(scalar)
+
+
+def transpose(matrix):
+    if hasattr(_backend, "transpose"):
+        return _backend.transpose(matrix)
+    return _as_array(matrix).T.copy()
+
+
+def neg(matrix):
+    if hasattr(_backend, "neg"):
+        return _backend.neg(matrix)
+    return -_as_array(matrix)
+
+
+def matmul(lhs, rhs):
+    """Multiply two matrices.
+
+    The C++ extension uses BLAS when it is available. If the extension was
+    built without BLAS, use NumPy's BLAS-backed matmul instead of the much
+    slower portable C++ fallback exposed by the extension.
+    """
+    lhs_arr = _as_array(lhs)
+    rhs_arr = _as_array(rhs)
+    if _HAS_FAST_CPP_MATMUL:
+        return _cpp_matmul(lhs_arr, rhs_arr)
+    return np.matmul(lhs_arr, rhs_arr)
 
 __all__ = [
     "Matrix",
+    "add",
     "array",
     "arange",
     "condition_number",
     "det",
     "eye",
     "frobenius_norm",
+    "hadamard",
     "hardware_backend",
     "inverse",
     "inverse_schur",
     "matmul",
     "matmul_strassen",
+    "neg",
     "ones",
     "residual_norm",
+    "scalar_mul",
     "solve",
+    "subtract",
     "trace",
+    "transpose",
     "zeros",
 ]
 

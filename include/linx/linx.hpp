@@ -4,10 +4,13 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
+#include <cstring>
 #include <initializer_list>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <stdexcept>
 #include <string>
@@ -28,11 +31,30 @@
 // Apple이 macOS 13.3부터 CLAPACK(dgetrf_, cblas_dgemm 등)을 deprecated로
 // 표기했지만, 기존 심볼은 여전히 정상 동작합니다.
 // 빌드 시스템(CMake/setup.py)에서 -Wno-deprecated-declarations로 경고를 억제합니다.
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(LINX_USE_ACCELERATE)
 #include <Accelerate/Accelerate.h>
 #define LINX_HAS_BLAS 1
 #else
 #define LINX_HAS_BLAS 0
+#endif
+
+// ── M2‑specific performance tuning ───────────────────────────────────────
+// Apple M1/M2/M3 have 4 Firestorm (performance) + 4 Icestorm (efficiency)
+// cores with 128‑bit NEON. We tune for: 4 P‑cores, 128 KB L1d, shared L2.
+#if defined(__aarch64__) && defined(__APPLE__)
+  #define LINX_M2_TILE_ROWS    64    // fits in L1d: 64×16 doubles = 8 KB
+  #define LINX_M2_TILE_COLS    256   // 64×256 = 16 384 doubles = 128 KB (fits L2 slice)
+  #define LINX_M2_L1_BYTES     131072
+  #define LINX_M2_P_CORES      4
+  #define LINX_M2_UNROLL       8     // unroll factor for NEON matmul micro‑kernel
+  #define LINX_M2_STRASSEN_MIN 2048  // use Strassen for N ≥ 2048
+#else
+  #define LINX_M2_TILE_ROWS    32
+  #define LINX_M2_TILE_COLS    128
+  #define LINX_M2_L1_BYTES     32768
+  #define LINX_M2_P_CORES      2
+  #define LINX_M2_UNROLL       4
+  #define LINX_M2_STRASSEN_MIN 128
 #endif
 
 namespace la {
@@ -150,6 +172,16 @@ public:
             throw ShapeError("block range is outside matrix bounds");
         }
         Matrix out(block_rows, block_cols);
+        // Use memcpy for whole rows when block_cols == cols_ (full‑width extract)
+        if (block_cols == cols_ && !out.data_.empty()) {
+            const std::size_t row_bytes = cols_ * sizeof(T);
+            for (std::size_t r = 0; r < block_rows; ++r) {
+                std::memcpy(out.data_.data() + r * cols_,
+                            data_.data() + (row0 + r) * cols_,
+                            row_bytes);
+            }
+            return out;
+        }
         for (std::size_t r = 0; r < block_rows; ++r) {
             for (std::size_t c = 0; c < block_cols; ++c) {
                 out(r, c) = (*this)(row0 + r, col0 + c);
@@ -161,6 +193,16 @@ public:
     void set_block(std::size_t row0, std::size_t col0, const Matrix& value) {
         if (row0 + value.rows_ > rows_ || col0 + value.cols_ > cols_) {
             throw ShapeError("set_block range is outside matrix bounds");
+        }
+        // Full-width write can use memcpy
+        if (value.cols_ == cols_ && !value.data_.empty()) {
+            const std::size_t row_bytes = cols_ * sizeof(T);
+            for (std::size_t r = 0; r < value.rows_; ++r) {
+                std::memcpy(data_.data() + (row0 + r) * cols_,
+                            value.data_.data() + r * cols_,
+                            row_bytes);
+            }
+            return;
         }
         for (std::size_t r = 0; r < value.rows_; ++r) {
             for (std::size_t c = 0; c < value.cols_; ++c) {
@@ -203,6 +245,11 @@ public:
                        out.data_.data(), 1, data_.size());
             return out;
         }
+#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)
+        if constexpr (std::is_same<T, double>::value) {
+            detail::vector_add_d(out.data_.data(), data_.data(), rhs.data_.data(), data_.size());
+            return out;
+        }
 #endif
         for (std::size_t i = 0; i < data_.size(); ++i) {
             out.data_[i] = data_[i] + rhs.data_[i];
@@ -219,6 +266,11 @@ public:
                        out.data_.data(), 1, data_.size());
             return out;
         }
+#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)
+        if constexpr (std::is_same<T, double>::value) {
+            detail::vector_sub_d(out.data_.data(), data_.data(), rhs.data_.data(), data_.size());
+            return out;
+        }
 #endif
         for (std::size_t i = 0; i < data_.size(); ++i) {
             out.data_[i] = data_[i] - rhs.data_[i];
@@ -231,6 +283,11 @@ public:
 #if LINX_HAS_BLAS
         if constexpr (std::is_same<T, double>::value) {
             vDSP_vnegD(data_.data(), 1, out.data_.data(), 1, data_.size());
+            return out;
+        }
+#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)
+        if constexpr (std::is_same<T, double>::value) {
+            detail::vector_neg_d(out.data_.data(), data_.data(), data_.size());
             return out;
         }
 #endif
@@ -247,6 +304,11 @@ public:
             double s = static_cast<double>(scalar);
             vDSP_vsmulD(data_.data(), 1, &s,
                         out.data_.data(), 1, data_.size());
+            return out;
+        }
+#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)
+        if constexpr (std::is_same<T, double>::value) {
+            detail::vector_scale_d(out.data_.data(), data_.data(), static_cast<double>(scalar), data_.size());
             return out;
         }
 #endif
@@ -270,6 +332,11 @@ public:
         if constexpr (std::is_same<T, double>::value) {
             vDSP_vmulD(data_.data(), 1, rhs.data_.data(), 1,
                        out.data_.data(), 1, data_.size());
+            return out;
+        }
+#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)
+        if constexpr (std::is_same<T, double>::value) {
+            detail::vector_mul_d(out.data_.data(), data_.data(), rhs.data_.data(), data_.size());
             return out;
         }
 #endif
@@ -392,11 +459,107 @@ inline double dot_contiguous(const double* lhs, const double* rhs, std::size_t n
     return sum;
 }
 
+// ── SIMD element‑wise vector kernels for double (non‑BLAS fallback) ────
+#if defined(__AVX2__) || defined(__AVX__)
+inline void vector_add_d(double* dst, const double* a, const double* b, std::size_t n) {
+    std::size_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+        __m256d va = _mm256_loadu_pd(a + i);
+        __m256d vb = _mm256_loadu_pd(b + i);
+        _mm256_storeu_pd(dst + i, _mm256_add_pd(va, vb));
+    }
+    for (; i < n; ++i) dst[i] = a[i] + b[i];
+}
+inline void vector_sub_d(double* dst, const double* a, const double* b, std::size_t n) {
+    std::size_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+        __m256d va = _mm256_loadu_pd(a + i);
+        __m256d vb = _mm256_loadu_pd(b + i);
+        _mm256_storeu_pd(dst + i, _mm256_sub_pd(va, vb));
+    }
+    for (; i < n; ++i) dst[i] = a[i] - b[i];
+}
+inline void vector_mul_d(double* dst, const double* a, const double* b, std::size_t n) {
+    std::size_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+        __m256d va = _mm256_loadu_pd(a + i);
+        __m256d vb = _mm256_loadu_pd(b + i);
+        _mm256_storeu_pd(dst + i, _mm256_mul_pd(va, vb));
+    }
+    for (; i < n; ++i) dst[i] = a[i] * b[i];
+}
+inline void vector_neg_d(double* dst, const double* a, std::size_t n) {
+    static const __m256d zero = _mm256_setzero_pd();
+    std::size_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+        __m256d va = _mm256_loadu_pd(a + i);
+        _mm256_storeu_pd(dst + i, _mm256_sub_pd(zero, va));
+    }
+    for (; i < n; ++i) dst[i] = -a[i];
+}
+inline void vector_scale_d(double* dst, const double* a, double s, std::size_t n) {
+    __m256d vs = _mm256_set1_pd(s);
+    std::size_t i = 0;
+    for (; i + 4 <= n; i += 4) {
+        __m256d va = _mm256_loadu_pd(a + i);
+        _mm256_storeu_pd(dst + i, _mm256_mul_pd(va, vs));
+    }
+    for (; i < n; ++i) dst[i] = a[i] * s;
+}
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+inline void vector_add_d(double* dst, const double* a, const double* b, std::size_t n) {
+    std::size_t i = 0;
+    for (; i + 2 <= n; i += 2) {
+        float64x2_t va = vld1q_f64(a + i);
+        float64x2_t vb = vld1q_f64(b + i);
+        vst1q_f64(dst + i, vaddq_f64(va, vb));
+    }
+    for (; i < n; ++i) dst[i] = a[i] + b[i];
+}
+inline void vector_sub_d(double* dst, const double* a, const double* b, std::size_t n) {
+    std::size_t i = 0;
+    for (; i + 2 <= n; i += 2) {
+        float64x2_t va = vld1q_f64(a + i);
+        float64x2_t vb = vld1q_f64(b + i);
+        vst1q_f64(dst + i, vsubq_f64(va, vb));
+    }
+    for (; i < n; ++i) dst[i] = a[i] - b[i];
+}
+inline void vector_mul_d(double* dst, const double* a, const double* b, std::size_t n) {
+    std::size_t i = 0;
+    for (; i + 2 <= n; i += 2) {
+        float64x2_t va = vld1q_f64(a + i);
+        float64x2_t vb = vld1q_f64(b + i);
+        vst1q_f64(dst + i, vmulq_f64(va, vb));
+    }
+    for (; i < n; ++i) dst[i] = a[i] * b[i];
+}
+inline void vector_neg_d(double* dst, const double* a, std::size_t n) {
+    std::size_t i = 0;
+    for (; i + 2 <= n; i += 2) {
+        float64x2_t va = vld1q_f64(a + i);
+        vst1q_f64(dst + i, vnegq_f64(va));
+    }
+    for (; i < n; ++i) dst[i] = -a[i];
+}
+inline void vector_scale_d(double* dst, const double* a, double s, std::size_t n) {
+    float64x2_t vs = vdupq_n_f64(s);
+    std::size_t i = 0;
+    for (; i + 2 <= n; i += 2) {
+        float64x2_t va = vld1q_f64(a + i);
+        vst1q_f64(dst + i, vmulq_f64(va, vs));
+    }
+    for (; i < n; ++i) dst[i] = a[i] * s;
+}
+#endif
+
 } // namespace detail
 
 inline std::string hardware_backend() {
-#if LINX_HAS_BLAS
-    return "Apple Accelerate BLAS/LAPACK";
+#if LINX_HAS_BLAS && defined(__aarch64__) && defined(__APPLE__)
+    return "Apple Accelerate BLAS/LAPACK (arm64)";
+#elif LINX_HAS_BLAS
+    return "Apple Accelerate BLAS/LAPACK (Intel)";
 #elif defined(__AVX2__)
     return "AVX2 SIMD + std::thread";
 #elif defined(__AVX__)
@@ -418,23 +581,21 @@ Matrix<T> matmul_classic(const Matrix<T>& lhs, const Matrix<T>& rhs) {
     const std::size_t rows = lhs.rows();
     const std::size_t inner = lhs.cols();
     const std::size_t cols = rhs.cols();
-    const std::size_t work = rows * inner * cols;
 
     if constexpr (std::is_same<T, double>::value) {
 #if LINX_HAS_BLAS
-        // Apple Accelerate BLAS를 이용한 고성능 행렬 곱셈
+        // ── Apple Accelerate BLAS ─────────────────────────────────────
         cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                     static_cast<int>(rows), static_cast<int>(cols), static_cast<int>(inner),
                     1.0, lhs.data().data(), static_cast<int>(inner),
                     rhs.data().data(), static_cast<int>(cols),
                     0.0, out.data().data(), static_cast<int>(cols));
+        return out;
 #else
-        // BLAS가 없으면 기존 SIMD + 스레드 경로 사용
-        const Matrix<T> rhs_t = rhs.transpose();  // 복사하여 소유권 확보
+        const Matrix<T> rhs_t = rhs.transpose();
         const auto& lhs_data = lhs.data();
         const auto& rhs_data = rhs_t.data();
         auto& out_data = out.data();
-
         auto worker = [&](std::size_t row_begin, std::size_t row_end) {
             for (std::size_t r = row_begin; r < row_end; ++r) {
                 const double* lhs_row = lhs_data.data() + r * inner;
@@ -444,16 +605,15 @@ Matrix<T> matmul_classic(const Matrix<T>& lhs, const Matrix<T>& rhs) {
                 }
             }
         };
-
+        const std::size_t work = rows * inner * cols;
         detail::parallel_for_rows(rows, 64 * 64 * 64, work, worker);
-#endif
         return out;
+#endif
     } else {
         constexpr std::size_t block = 32;
         const auto& lhs_data = lhs.data();
         const auto& rhs_data = rhs.data();
         auto& out_data = out.data();
-
         auto worker = [&](std::size_t row_begin, std::size_t row_end) {
             for (std::size_t ii = row_begin; ii < row_end; ii += block) {
                 for (std::size_t kk = 0; kk < inner; kk += block) {
@@ -461,20 +621,18 @@ Matrix<T> matmul_classic(const Matrix<T>& lhs, const Matrix<T>& rhs) {
                         const std::size_t i_end = std::min(ii + block, row_end);
                         const std::size_t k_end = std::min(kk + block, inner);
                         const std::size_t j_end = std::min(jj + block, cols);
-
                         for (std::size_t i = ii; i < i_end; ++i) {
                             for (std::size_t k = kk; k < k_end; ++k) {
                                 const T a = lhs_data[i * inner + k];
-                                for (std::size_t j = jj; j < j_end; ++j) {
+                                for (std::size_t j = jj; j < j_end; ++j)
                                     out_data[i * cols + j] += a * rhs_data[k * cols + j];
-                                }
                             }
                         }
                     }
                 }
             }
         };
-
+        const std::size_t work = rows * inner * cols;
         detail::parallel_for_rows(rows, 64 * 64 * 64, work, worker);
         return out;
     }
@@ -597,8 +755,10 @@ Matrix<T> matmul_strassen(const Matrix<T>& lhs, const Matrix<T>& rhs, std::size_
 
 template <typename T>
 Matrix<T> matmul(const Matrix<T>& lhs, const Matrix<T>& rhs) {
-    const std::size_t work = lhs.rows() * lhs.cols() * rhs.cols();
-    if (lhs.rows() == lhs.cols() && rhs.rows() == rhs.cols() && lhs.cols() == rhs.rows() && work >= 128 * 128 * 128) {
+    // Square matrices with N ≥ LINX_M2_STRASSEN_MIN use Strassen
+    if (lhs.rows() == lhs.cols() && rhs.rows() == rhs.cols()
+        && lhs.cols() == rhs.rows()
+        && lhs.rows() >= static_cast<std::size_t>(LINX_M2_STRASSEN_MIN)) {
         return matmul_strassen(lhs, rhs);
     }
     return matmul_classic(lhs, rhs);
@@ -770,6 +930,13 @@ T frobenius_norm(const Matrix<T>& matrix) {
         return static_cast<T>(std::sqrt(sum_sq));
     }
 #endif
+    // Use SIMD dot product to compute sum of squares
+    if constexpr (std::is_same<T, double>::value) {
+        double sum_sq = detail::dot_contiguous(matrix.data().data(),
+                                                matrix.data().data(),
+                                                matrix.data().size());
+        return static_cast<T>(std::sqrt(sum_sq));
+    }
     T sum = T{};
     for (const auto& value : matrix.data()) {
         sum += value * value;

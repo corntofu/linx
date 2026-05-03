@@ -9,6 +9,17 @@ def test_matmul():
     np.testing.assert_allclose(linx.matmul_strassen(a, b, threshold=2), a @ b)
 
 
+def test_elementwise_api_exports():
+    a = np.array([[1.0, 2.0], [3.0, 4.0]])
+    b = np.array([[5.0, 6.0], [7.0, 8.0]])
+
+    np.testing.assert_allclose(linx.add(a, b), a + b)
+    np.testing.assert_allclose(linx.subtract(a, b), a - b)
+    np.testing.assert_allclose(linx.hadamard(a, b), a * b)
+    np.testing.assert_allclose(linx.scalar_mul(a, 2.5), a * 2.5)
+    np.testing.assert_allclose(linx.neg(a), -a)
+
+
 def test_inverse():
     a = np.array(
         [
