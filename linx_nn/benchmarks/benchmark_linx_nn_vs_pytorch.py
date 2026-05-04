@@ -28,12 +28,22 @@ def make_data(batch: int, in_features: int, out_features: int, seed: int):
     return x, y
 
 
-def bench_linx_nn(x_np, y_np, hidden: int, iters: int, warmup: int):
-    model = Sequential(
+def _make_linx_model(x_np, y_np, hidden: int):
+    return Sequential(
         Linear(x_np.shape[1], hidden, seed=1),
         ReLU(),
         Linear(hidden, y_np.shape[1], seed=2),
     )
+
+
+def _linx_weight(in_features: int, out_features: int, seed: int):
+    rng = np.random.default_rng(seed)
+    limit = np.sqrt(6.0 / in_features)
+    return rng.uniform(-limit, limit, size=(in_features, out_features)).astype(np.float64)
+
+
+def bench_linx_nn_autograd(x_np, y_np, hidden: int, iters: int, warmup: int):
+    model = _make_linx_model(x_np, y_np, hidden)
     opt = SGD(model.parameters(), lr=1e-3)
     x = Tensor(x_np)
     y = Tensor(y_np)
@@ -55,6 +65,25 @@ def bench_linx_nn(x_np, y_np, hidden: int, iters: int, warmup: int):
     return samples, last_loss
 
 
+def bench_linx_nn_fused(x_np, y_np, hidden: int, iters: int, warmup: int):
+    model = _make_linx_model(x_np, y_np, hidden)
+    opt = SGD(model.parameters(), lr=1e-3)
+    x = Tensor(x_np)
+    y = Tensor(y_np)
+    samples = []
+    last_loss = None
+
+    for step in range(iters + warmup):
+        start = _timer()
+        loss = model.train_mse_step(x, y, opt)
+        elapsed = _timer() - start
+        if step >= warmup:
+            samples.append(elapsed)
+        last_loss = loss.item()
+
+    return samples, last_loss
+
+
 def bench_torch(x_np, y_np, hidden: int, iters: int, warmup: int):
     try:
         import torch
@@ -67,6 +96,13 @@ def bench_torch(x_np, y_np, hidden: int, iters: int, warmup: int):
         torch.nn.ReLU(),
         torch.nn.Linear(hidden, y_np.shape[1]),
     )
+    with torch.no_grad():
+        first_weight = _linx_weight(x_np.shape[1], hidden, seed=1)
+        second_weight = _linx_weight(hidden, y_np.shape[1], seed=2)
+        model[0].weight.copy_(torch.from_numpy(first_weight.T))
+        model[0].bias.zero_()
+        model[2].weight.copy_(torch.from_numpy(second_weight.T))
+        model[2].bias.zero_()
     opt = torch.optim.SGD(model.parameters(), lr=1e-3)
     x = torch.from_numpy(x_np)
     y = torch.from_numpy(y_np)
@@ -100,6 +136,16 @@ def summarize(name: str, samples, loss: float):
     }
 
 
+def repeat_bench(name: str, fn, repeats: int, *args):
+    best = None
+    for _ in range(repeats):
+        samples, loss = fn(*args)
+        row = summarize(name, samples, loss)
+        if best is None or row["mean_ms"] < best["mean_ms"]:
+            best = row
+    return best
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch", type=int, default=512)
@@ -108,23 +154,40 @@ def main():
     parser.add_argument("--out-features", type=int, default=64)
     parser.add_argument("--iters", type=int, default=100)
     parser.add_argument("--warmup", type=int, default=10)
+    parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--seed", type=int, default=123)
     args = parser.parse_args()
 
     x_np, y_np = make_data(args.batch, args.in_features, args.out_features, args.seed)
-    linx_samples, linx_loss = bench_linx_nn(x_np, y_np, args.hidden, args.iters, args.warmup)
-    torch_samples, torch_loss = bench_torch(x_np, y_np, args.hidden, args.iters, args.warmup)
-
     results = [
-        summarize("linx_nn", linx_samples, linx_loss),
-        summarize("pytorch", torch_samples, torch_loss),
+        repeat_bench(
+            "linx_nn_fused",
+            bench_linx_nn_fused,
+            args.repeats,
+            x_np,
+            y_np,
+            args.hidden,
+            args.iters,
+            args.warmup,
+        ),
+        repeat_bench(
+            "linx_nn_autograd",
+            bench_linx_nn_autograd,
+            args.repeats,
+            x_np,
+            y_np,
+            args.hidden,
+            args.iters,
+            args.warmup,
+        ),
+        repeat_bench("pytorch", bench_torch, args.repeats, x_np, y_np, args.hidden, args.iters, args.warmup),
     ]
     fastest = min(results, key=lambda item: item["mean_ms"])
 
-    print("backend,batch,in,hidden,out,mean_ms,median_ms,iters_per_sec,loss")
+    print("backend,batch,in,hidden,out,repeats,mean_ms,median_ms,iters_per_sec,loss")
     for row in results:
         print(
-            f"{row['name']},{args.batch},{args.in_features},{args.hidden},{args.out_features},"
+            f"{row['name']},{args.batch},{args.in_features},{args.hidden},{args.out_features},{args.repeats},"
             f"{row['mean_ms']:.3f},{row['median_ms']:.3f},{row['iters_per_sec']:.2f},{row['loss']:.6f}"
         )
 

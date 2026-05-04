@@ -11,10 +11,15 @@ existing `linx` linear algebra backend.
 - Layers: `Linear`, `ReLU`, `Sigmoid`, `Tanh`, `Sequential`
 - Loss: `mse_loss`
 - Optimizer: `SGD`
+- Fused dense MLP training: `Sequential.train_mse_step(...)`
 
 Matrix-heavy paths use `linx.matmul`, `linx.transpose`, and linx elementwise
 operations when available, so forward and backward passes reuse the optimized
 C++/Accelerate/BLAS backend.
+
+For hot CPU training loops made from `Linear` and elementwise activations,
+`Sequential.train_mse_step(x, y, optimizer)` skips general graph construction
+and runs a fused `forward + MSE backward + optimizer.step`.
 
 ## Example
 
@@ -55,5 +60,5 @@ PYTHONPATH=linx/python:linx_nn python -m pytest linx_nn/tests -q
 ## Benchmark vs PyTorch
 
 ```bash
-PYTHONPATH=linx/python:linx_nn python linx_nn/benchmarks/benchmark_linx_nn_vs_pytorch.py
+PYTHONPATH=linx/python:linx_nn python linx_nn/benchmarks/benchmark_linx_nn_vs_pytorch.py --iters 300 --warmup 80 --repeats 3
 ```

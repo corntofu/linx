@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from .tensor import no_grad
-
 
 class SGD:
     """Stochastic gradient descent with optional momentum and weight decay."""
@@ -24,19 +22,24 @@ class SGD:
             param.zero_grad()
 
     def step(self):
-        with no_grad():
-            for idx, param in enumerate(self.params):
-                if param.grad is None:
-                    continue
-                grad = param.grad
-                if self.weight_decay:
-                    grad = grad + self.weight_decay * param.data
-                if self.momentum:
-                    velocity = self._velocity[idx]
-                    if velocity is None:
-                        velocity = grad.copy()
-                    else:
-                        velocity = self.momentum * velocity + grad
+        for idx, param in enumerate(self.params):
+            grad = param.grad
+            if grad is None:
+                continue
+
+            if self.momentum:
+                velocity = self._velocity[idx]
+                if velocity is None:
+                    velocity = grad.copy()
                     self._velocity[idx] = velocity
-                    grad = velocity
-                param.data -= self.lr * grad
+                else:
+                    velocity *= self.momentum
+                    velocity += grad
+                if self.weight_decay:
+                    velocity += self.weight_decay * param.data
+                param.data -= self.lr * velocity
+                continue
+
+            if self.weight_decay:
+                param.data *= 1.0 - self.lr * self.weight_decay
+            param.data -= self.lr * grad

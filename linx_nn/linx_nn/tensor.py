@@ -13,6 +13,13 @@ except Exception:  # pragma: no cover - keeps docs/imports usable before build
     linx = None
 
 
+_LINX_ADD = getattr(linx, "add", None) if linx is not None else None
+_LINX_SUBTRACT = getattr(linx, "subtract", None) if linx is not None else None
+_LINX_HADAMARD = getattr(linx, "hadamard", None) if linx is not None else None
+_LINX_SCALAR_MUL = getattr(linx, "scalar_mul", None) if linx is not None else None
+_LINX_MATMUL = getattr(linx, "matmul", None) if linx is not None else None
+_LINX_TRANSPOSE = getattr(linx, "transpose", None) if linx is not None else None
+
 _GRAD_ENABLED = True
 
 
@@ -45,7 +52,14 @@ def _ensure_tensor(value) -> "Tensor":
 
 def _linx_binary(lhs: np.ndarray, rhs: np.ndarray, name: str) -> np.ndarray:
     if linx is not None and lhs.ndim == rhs.ndim == 2 and lhs.shape == rhs.shape:
-        fn = getattr(linx, name, None)
+        if name == "add":
+            fn = _LINX_ADD
+        elif name == "subtract":
+            fn = _LINX_SUBTRACT
+        elif name == "hadamard":
+            fn = _LINX_HADAMARD
+        else:
+            fn = None
         if fn is not None:
             return fn(lhs, rhs)
     if name == "add":
@@ -58,24 +72,20 @@ def _linx_binary(lhs: np.ndarray, rhs: np.ndarray, name: str) -> np.ndarray:
 
 
 def _linx_scalar(data: np.ndarray, scalar: float) -> np.ndarray:
-    if linx is not None and data.ndim == 2:
-        fn = getattr(linx, "scalar_mul", None)
-        if fn is not None:
-            return fn(data, scalar)
+    if _LINX_SCALAR_MUL is not None and data.ndim == 2:
+        return _LINX_SCALAR_MUL(data, scalar)
     return data * scalar
 
 
 def _linx_matmul(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
-    if linx is not None and lhs.ndim == rhs.ndim == 2:
-        return linx.matmul(lhs, rhs)
+    if _LINX_MATMUL is not None and lhs.ndim == rhs.ndim == 2:
+        return _LINX_MATMUL(lhs, rhs)
     return lhs @ rhs
 
 
 def _linx_transpose(data: np.ndarray) -> np.ndarray:
-    if linx is not None and data.ndim == 2:
-        fn = getattr(linx, "transpose", None)
-        if fn is not None:
-            return fn(data)
+    if _LINX_TRANSPOSE is not None and data.ndim == 2:
+        return _LINX_TRANSPOSE(data)
     return np.ascontiguousarray(data.T)
 
 
@@ -97,12 +107,13 @@ class Tensor:
     """
 
     __array_priority__ = 100
+    __slots__ = ("data", "requires_grad", "grad", "_prev", "_op", "_backward")
 
     def __init__(self, data, requires_grad: bool = False, _children: Iterable["Tensor"] = (), _op: str = ""):
         self.data = _array(data)
         self.requires_grad = bool(requires_grad)
         self.grad: np.ndarray | None = None
-        self._prev = set(_children) if _GRAD_ENABLED else set()
+        self._prev = tuple(_children) if self.requires_grad and _GRAD_ENABLED else ()
         self._op = _op
         self._backward = lambda: None
 
@@ -300,7 +311,7 @@ class Tensor:
         if self.grad is None:
             self.grad = grad
         elif self.grad.shape == grad.shape:
-            self.grad = _linx_binary(self.grad, grad, "add")
+            self.grad += grad
         else:
             self.grad = self.grad + grad
 
@@ -314,3 +325,54 @@ class Parameter(Tensor):
 
 def tensor(data, requires_grad: bool = False) -> Tensor:
     return Tensor(data, requires_grad=requires_grad)
+
+
+def linear(input, weight, bias=None) -> Tensor:
+    """Fused fully connected op: ``input @ weight + bias``."""
+    input = _ensure_tensor(input)
+    weight = _ensure_tensor(weight)
+    bias = None if bias is None else _ensure_tensor(bias)
+
+    data = _linx_matmul(input.data, weight.data)
+    if bias is not None:
+        data += bias.data
+
+    requires_grad = input.requires_grad or weight.requires_grad or (bias is not None and bias.requires_grad)
+    children = (input, weight) if bias is None else (input, weight, bias)
+    out = Tensor(data, requires_grad, children, "linear")
+
+    def _backward():
+        grad = out.grad
+        if input.requires_grad:
+            input._add_grad(_linx_matmul(grad, _linx_transpose(weight.data)))
+        if weight.requires_grad:
+            weight._add_grad(_linx_matmul(_linx_transpose(input.data), grad))
+        if bias is not None and bias.requires_grad:
+            if bias.shape[0] == 1 and grad.shape[0] != 1:
+                bias._add_grad(np.ascontiguousarray(grad.sum(axis=0, keepdims=True)))
+            else:
+                bias._add_grad(_unbroadcast(grad, bias.shape))
+
+    out._backward = _backward
+    return out
+
+
+def mse_loss_tensor(pred, target) -> Tensor:
+    """Fused mean squared error loss."""
+    pred = _ensure_tensor(pred)
+    target = _ensure_tensor(target)
+    diff = pred.data - target.data
+    flat = diff.reshape(-1)
+    data = np.array([[float(np.dot(flat, flat) / diff.size)]], dtype=np.float64)
+    out = Tensor(data, pred.requires_grad or target.requires_grad, (pred, target), "mse_loss")
+
+    def _backward():
+        scale = float(out.grad.reshape(-1)[0]) * (2.0 / diff.size)
+        grad = diff * scale
+        if pred.requires_grad:
+            pred._add_grad(_unbroadcast(grad, pred.shape))
+        if target.requires_grad:
+            target._add_grad(_unbroadcast(-grad, target.shape))
+
+    out._backward = _backward
+    return out

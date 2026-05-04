@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .tensor import Tensor, _ensure_tensor
+from .tensor import Tensor, _ensure_tensor, mse_loss_tensor
 
 
 def relu(x) -> Tensor:
@@ -18,5 +18,4 @@ def tanh(x) -> Tensor:
 
 
 def mse_loss(pred, target) -> Tensor:
-    diff = _ensure_tensor(pred) - _ensure_tensor(target)
-    return (diff * diff).mean()
+    return mse_loss_tensor(pred, target)
