@@ -4,6 +4,8 @@ Usage:
     python tests/benchmark_linx_vs_numpy.py
     python tests/benchmark_linx_vs_numpy.py --quick   # smaller matrices, fewer repetitions
     python tests/benchmark_linx_vs_numpy.py --only-inverse --include-inverse-8192
+    python tests/benchmark_linx_vs_numpy.py --only-least-squares
+    python tests/benchmark_linx_vs_numpy.py --only-least-squares --include-least-squares-4096-strassen
 """
 
 import argparse
@@ -80,6 +82,18 @@ MATMUL_SIZES_FULL = [
     ("1024x1024", 1024, 1024, 1024),
     ("2048x2048", 2048, 2048, 2048),
 ]
+
+LEAST_SQUARES_SIZES_QUICK = [
+    ("128x32", 128, 32),
+    ("512x64", 512, 64),
+]
+LEAST_SQUARES_SIZES_FULL = [
+    ("128x32", 128, 32),
+    ("512x64", 512, 64),
+    ("1024x128", 1024, 128),
+    ("2048x256", 2048, 256),
+]
+LEAST_SQUARES_STRASSEN_SIZE = ("4096x4096", 4096, 4096)
 
 
 def parse_shape(name):
@@ -305,6 +319,67 @@ def bench_solve(quick=False):
     print_table(headers, rows)
 
 
+def numpy_least_squares(a, b):
+    return np.linalg.lstsq(a, b, rcond=None)[0]
+
+
+def linx_least_squares_normal_eq(a, b):
+    a_t = linx.transpose(a)
+    ata = linx.matmul(a_t, a)
+    atb = linx.matmul(a_t, b)
+    return linx.solve(ata, atb)
+
+
+def linx_least_squares_strassen_normal_eq(a, b):
+    a_t = linx.transpose(a)
+    ata = linx.matmul_strassen(a_t, a, threshold=4096)
+    atb = linx.matmul(a_t, b)
+    return linx.solve(ata, atb)
+
+
+def make_least_squares_input(m, n):
+    a_np = np.random.randn(m, n).astype(np.float64)
+    x_true = np.random.randn(n, 1).astype(np.float64)
+    noise = 1e-3 * np.random.randn(m, 1).astype(np.float64)
+    return a_np, a_np @ x_true + noise
+
+
+def bench_least_squares(quick=False, include_4096_strassen=False):
+    print("\n" + "=" * 72)
+    print("  LEAST SQUARES (min ||Ax-b||)  —  linx vs NumPy")
+    print("=" * 72)
+    print("  linx path: normal equations, solve((A.T @ A), (A.T @ b))")
+    if include_4096_strassen:
+        print("  Strassen 4096x4096 path: Strassen for A.T @ A, regular matmul for A.T @ b")
+
+    sizes = LEAST_SQUARES_SIZES_QUICK if quick else LEAST_SQUARES_SIZES_FULL
+    headers = ["Size (M×N)", "NumPy (lstsq)", "linx (normal eq)", "NumPy/linx"]
+    rows = []
+
+    for name, m, n in sizes:
+        a_np, b_np = make_least_squares_input(m, n)
+
+        reps = 3 if m >= 1024 else 5
+
+        t_np, _ = timed(numpy_least_squares, (a_np, b_np), reps=reps)
+        t_linx, _ = timed(linx_least_squares_normal_eq, (a_np, b_np), reps=reps)
+
+        ratio = t_np / t_linx if t_linx > 0 else float("inf")
+        rows.append([name, fmt_time(t_np), fmt_time(t_linx), f"{ratio:.2f}x"])
+
+    if include_4096_strassen:
+        name, m, n = LEAST_SQUARES_STRASSEN_SIZE
+        a_np, b_np = make_least_squares_input(m, n)
+
+        t_np, _ = timed(numpy_least_squares, (a_np, b_np), reps=1, warmup=0)
+        t_linx, _ = timed(linx_least_squares_strassen_normal_eq, (a_np, b_np), reps=1, warmup=0)
+
+        ratio = t_np / t_linx if t_linx > 0 else float("inf")
+        rows.append([f"{name} strassen", fmt_time(t_np), fmt_time(t_linx), f"{ratio:.2f}x"])
+
+    print_table(headers, rows)
+
+
 def bench_det_trace_norm(quick=False):
     print("\n" + "=" * 72)
     print("  DET / TRACE / NORM  —  linx vs NumPy")
@@ -397,6 +472,12 @@ def main():
     parser = argparse.ArgumentParser(description="Benchmark linx C++ vs NumPy")
     parser.add_argument("--quick", action="store_true", help="Quick mode (smaller matrices, fewer reps)")
     parser.add_argument("--only-inverse", action="store_true", help="Run only inverse benchmarks")
+    parser.add_argument("--only-least-squares", action="store_true", help="Run only least-squares benchmarks")
+    parser.add_argument(
+        "--include-least-squares-4096-strassen",
+        action="store_true",
+        help="Include a 4096x4096 least-squares benchmark using Strassen for A.T @ A",
+    )
     parser.add_argument(
         "--include-inverse-8192",
         action="store_true",
@@ -426,12 +507,26 @@ def main():
         print("=" * 72 + "\n")
         return
 
+    if args.only_least_squares:
+        bench_least_squares(
+            quick=args.quick,
+            include_4096_strassen=args.include_least_squares_4096_strassen,
+        )
+        print("\n" + "=" * 72)
+        print("  Benchmark complete.")
+        print("=" * 72 + "\n")
+        return
+
     bench_matmul(quick=args.quick)
     bench_matmul_classic_strassen(quick=args.quick)
     bench_inverse(quick=args.quick, include_8192=args.include_inverse_8192)
     bench_elementwise(quick=args.quick)
     bench_transpose(quick=args.quick)
     bench_solve(quick=args.quick)
+    bench_least_squares(
+        quick=args.quick,
+        include_4096_strassen=args.include_least_squares_4096_strassen,
+    )
     bench_det_trace_norm(quick=args.quick)
     bench_matrix_class(quick=args.quick)
 

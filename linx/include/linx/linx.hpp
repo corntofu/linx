@@ -960,7 +960,7 @@ Matrix<T> matmul_strassen(const Matrix<T>& lhs, const Matrix<T>& rhs, std::size_
     if constexpr (std::is_same<T, double>::value) {
         std::size_t size = std::max({lhs.rows(), lhs.cols(), rhs.cols(), std::size_t{1}});
         const std::size_t cutoff = detail::strassen_effective_threshold(threshold);
-        if (size <= cutoff) {
+        if (size < cutoff) {
             return matmul_classic(lhs, rhs);
         }
         if (lhs.rows() == size && lhs.cols() == size &&

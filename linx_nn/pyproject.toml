@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linx-nn"
+version = "0.1.0"
+description = "PyTorch-like neural network toolkit powered by linx"
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+
+[tool.setuptools]
+packages = ["linx_nn"]

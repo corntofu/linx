@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: linx-nn
+Version: 0.1.0
+Summary: PyTorch-like neural network toolkit powered by linx
+Requires-Python: >=3.9
+Requires-Dist: numpy

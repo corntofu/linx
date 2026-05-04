@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+linx_nn/__init__.py
+linx_nn/functional.py
+linx_nn/modules.py
+linx_nn/optim.py
+linx_nn/tensor.py
+linx_nn.egg-info/PKG-INFO
+linx_nn.egg-info/SOURCES.txt
+linx_nn.egg-info/dependency_links.txt
+linx_nn.egg-info/requires.txt
+linx_nn.egg-info/top_level.txt
+tests/test_linx_nn.py

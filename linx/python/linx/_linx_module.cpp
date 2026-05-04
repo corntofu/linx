@@ -506,7 +506,7 @@ PyObject* py_matmul_strassen(PyObject*, PyObject* args, PyObject* kwargs) {
         static_cast<std::size_t>(LINX_M2_STRASSEN_BASE)
     );
     const auto max_dim = static_cast<std::size_t>(std::max({rows, inner, cols, npy_intp{1}}));
-    if (max_dim <= cutoff) {
+    if (max_dim < cutoff) {
         npy_intp dims[2] = {rows, cols};
         PyObject* out = PyArray_SimpleNew(2, dims, NPY_DOUBLE);
         if (out == nullptr) {
