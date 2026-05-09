@@ -43,6 +43,9 @@ class SceneObject:
     def rotated(self, dx: float = 0.0, dy: float = 0.0, dz: float = 0.0) -> "SceneObject":
         return replace(self, rx=self.rx + dx, ry=self.ry + dy, rz=self.rz + dz)
 
+    def moved(self, dx: float = 0.0, dy: float = 0.0, dz: float = 0.0) -> "SceneObject":
+        return replace(self, x=self.x + dx, y=self.y + dy, z=self.z + dz)
+
 
 @dataclass(frozen=True)
 class SceneState:
@@ -141,6 +144,29 @@ class SceneHistory:
             )
         )
 
+    def move_selected(
+        self,
+        dx: float = 0.0,
+        dy: float = 0.0,
+        dz: float = 0.0,
+        record: bool = True,
+    ) -> SceneState:
+        selected_id = self.state.selected_id
+        if selected_id is None:
+            return self.state
+        updated = tuple(
+            obj.moved(dx=dx, dy=dy, dz=dz) if obj.id == selected_id else obj
+            for obj in self.state.objects
+        )
+        return self.set_state(
+            SceneState(
+                objects=updated,
+                selected_id=selected_id,
+                next_id=self.state.next_id,
+            ),
+            record=record,
+        )
+
     def clear(self) -> SceneState:
         if not self.state.objects:
             return self.state
@@ -160,5 +186,7 @@ class SceneHistory:
         self.state = self._redo.pop()
         return self.state
 
-    def render_items(self) -> list[tuple[Mesh, np.ndarray]]:
+    def render_items(self, include_ids: bool = False):
+        if include_ids:
+            return [(obj.mesh(), obj.model_matrix(), obj.id) for obj in self.state.objects]
         return [(obj.mesh(), obj.model_matrix()) for obj in self.state.objects]

@@ -57,14 +57,33 @@ class RendererTests(unittest.TestCase):
         history.redo()
         self.assertEqual(len(history.state.objects), 1)
 
+    def test_scene_history_move_selected_undo(self) -> None:
+        history = SceneHistory()
+        history.add_shape("cube")
+        before = history.state.selected()
+
+        history.move_selected(dx=0.5, dy=-0.25, dz=0.1)
+        after = history.state.selected()
+        self.assertAlmostEqual(after.x, before.x + 0.5)
+        self.assertAlmostEqual(after.y, before.y - 0.25)
+        self.assertAlmostEqual(after.z, before.z + 0.1)
+
+        history.undo()
+        restored = history.state.selected()
+        self.assertAlmostEqual(restored.x, before.x)
+        self.assertAlmostEqual(restored.y, before.y)
+        self.assertAlmostEqual(restored.z, before.z)
+
     def test_render_many_renders_scene(self) -> None:
         history = SceneHistory()
         history.add_shape("cube")
         history.add_shape("pyramid")
         renderer = Renderer(width=96, height=72, backend="numpy")
-        result = renderer.render_many(history.render_items())
+        result = renderer.render_many(history.render_items(include_ids=True))
 
         self.assertEqual(result.image.shape, (72, 96, 3))
+        self.assertIsNotNone(result.object_ids)
+        self.assertTrue((result.object_ids >= 0).any())
         self.assertTrue(np.isfinite(result.depth).any())
 
 

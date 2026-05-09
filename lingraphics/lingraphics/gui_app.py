@@ -5,6 +5,8 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+import numpy as np
+
 from .camera import Camera
 from .io import to_uint8
 from .renderer import Renderer
@@ -24,6 +26,10 @@ class LinGraphicsApp(tk.Tk):
         self.history = SceneHistory()
         self.renderer: Renderer | None = None
         self._photo: tk.PhotoImage | None = None
+        self._object_ids: np.ndarray | None = None
+        self._drag_start: tuple[int, int] | None = None
+        self._drag_base_state = None
+        self._drag_has_motion = False
 
         self._build_ui()
         self.history.add_shape("cube")
@@ -84,6 +90,18 @@ class LinGraphicsApp(tk.Tk):
         rotate_box.columnconfigure(1, weight=1)
         rotate_box.columnconfigure(2, weight=1)
 
+        move_box = ttk.LabelFrame(sidebar, text="Move Selected", padding=8)
+        move_box.pack(fill=tk.X, pady=(0, 10))
+        ttk.Button(move_box, text="Up", command=lambda: self._move(dy=0.18)).grid(row=0, column=1, sticky="ew", pady=(0, 4))
+        ttk.Button(move_box, text="Left", command=lambda: self._move(dx=-0.18)).grid(row=1, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(move_box, text="Right", command=lambda: self._move(dx=0.18)).grid(row=1, column=2, sticky="ew", padx=(4, 0))
+        ttk.Button(move_box, text="Down", command=lambda: self._move(dy=-0.18)).grid(row=2, column=1, sticky="ew", pady=(4, 0))
+        ttk.Button(move_box, text="Near", command=lambda: self._move(dz=0.18)).grid(row=3, column=0, sticky="ew", padx=(0, 4), pady=(8, 0))
+        ttk.Button(move_box, text="Far", command=lambda: self._move(dz=-0.18)).grid(row=3, column=2, sticky="ew", padx=(4, 0), pady=(8, 0))
+        move_box.columnconfigure(0, weight=1)
+        move_box.columnconfigure(1, weight=1)
+        move_box.columnconfigure(2, weight=1)
+
         ttk.Label(sidebar, text="Objects").pack(anchor="w")
         self.object_list = tk.Listbox(sidebar, height=14, exportselection=False)
         self.object_list.pack(fill=tk.BOTH, expand=True, pady=(4, 8))
@@ -98,11 +116,20 @@ class LinGraphicsApp(tk.Tk):
         self.canvas = tk.Canvas(viewport, width=720, height=540, bg="#090b10", highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.canvas.bind("<Configure>", lambda _event: self._render_later())
+        self.canvas.bind("<Button-1>", self._canvas_press)
+        self.canvas.bind("<B1-Motion>", self._canvas_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._canvas_release)
 
         self.bind("<Command-z>", lambda _event: self._undo())
         self.bind("<Control-z>", lambda _event: self._undo())
         self.bind("<BackSpace>", lambda _event: self._delete_selected())
         self.bind("<Delete>", lambda _event: self._delete_selected())
+        self.bind("<Left>", lambda _event: self._move(dx=-0.18))
+        self.bind("<Right>", lambda _event: self._move(dx=0.18))
+        self.bind("<Up>", lambda _event: self._move(dy=0.18))
+        self.bind("<Down>", lambda _event: self._move(dy=-0.18))
+        self.bind("w", lambda _event: self._move(dz=0.18))
+        self.bind("s", lambda _event: self._move(dz=-0.18))
 
     def _add_shape(self) -> None:
         self.history.add_shape(self.shape_var.get())
@@ -134,15 +161,81 @@ class LinGraphicsApp(tk.Tk):
         self._sync_ui()
         self._render()
 
+    def _move(self, dx: float = 0.0, dy: float = 0.0, dz: float = 0.0) -> None:
+        self.history.move_selected(dx=dx, dy=dy, dz=dz)
+        self._sync_ui()
+        self._render()
+
     def _select_from_list(self, _event: tk.Event) -> None:
         selection = self.object_list.curselection()
         if not selection:
             self.history.select(None)
             self._sync_ui()
+            self._render()
             return
         obj = self.history.state.objects[selection[0]]
         self.history.select(obj.id)
         self._sync_ui()
+        self._render()
+
+    def _canvas_press(self, event: tk.Event) -> None:
+        object_id = self._object_id_at(event.x, event.y)
+        self.history.select(object_id if object_id >= 0 else None)
+        self._drag_start = (event.x, event.y)
+        self._drag_base_state = self.history.state
+        self._drag_has_motion = False
+        self._sync_ui()
+        self._render()
+
+    def _canvas_drag(self, event: tk.Event) -> None:
+        if self._drag_start is None or self._drag_base_state is None:
+            return
+        if self._drag_base_state.selected_id is None:
+            return
+        dx_pixels = event.x - self._drag_start[0]
+        dy_pixels = event.y - self._drag_start[1]
+        if abs(dx_pixels) + abs(dy_pixels) < 2:
+            return
+        scale = 4.2 / max(1, min(self.canvas.winfo_width(), self.canvas.winfo_height()))
+        self.history.set_state(self._drag_base_state, record=False)
+        self.history.move_selected(dx=dx_pixels * scale, dy=-dy_pixels * scale, record=False)
+        self._drag_has_motion = True
+        self._sync_ui()
+        self._render()
+
+    def _canvas_release(self, _event: tk.Event) -> None:
+        if self._drag_has_motion and self._drag_base_state is not None:
+            final_state = self.history.state
+            self.history.set_state(self._drag_base_state, record=False)
+            self.history.set_state(final_state, record=True)
+            self._sync_ui()
+        self._drag_start = None
+        self._drag_base_state = None
+        self._drag_has_motion = False
+
+    def _object_id_at(self, x: int, y: int) -> int:
+        if self._object_ids is None:
+            return -1
+        if y < 0 or x < 0 or y >= self._object_ids.shape[0] or x >= self._object_ids.shape[1]:
+            return -1
+        return int(self._object_ids[y, x])
+
+    def _draw_selection_overlay(self) -> None:
+        selected_id = self.history.state.selected_id
+        if selected_id is None or self._object_ids is None:
+            return
+        mask = self._object_ids == selected_id
+        if not np.any(mask):
+            return
+        ys, xs = np.where(mask)
+        self.canvas.create_rectangle(
+            int(xs.min()) - 4,
+            int(ys.min()) - 4,
+            int(xs.max()) + 4,
+            int(ys.max()) + 4,
+            outline="#f8d84a",
+            width=2,
+        )
 
     def _sync_ui(self) -> None:
         selected_id = self.history.state.selected_id
@@ -173,12 +266,18 @@ class LinGraphicsApp(tk.Tk):
                 aspect=width / height,
                 fovy_degrees=48.0,
             )
-            result = self.renderer.render_many(self.history.render_items(), camera=camera)
+            result = self.renderer.render_many(self.history.render_items(include_ids=True), camera=camera)
+            self._object_ids = result.object_ids
             self._photo = _photo_from_image(result.image)
             self.canvas.delete("all")
             self.canvas.create_image(0, 0, anchor=tk.NW, image=self._photo)
+            self._draw_selection_overlay()
             info = result.backend
-            self.status_var.set(f"{info.name}: {info.matrix_engine}")
+            selected = self.history.state.selected()
+            selected_text = ""
+            if selected is not None:
+                selected_text = f" | {selected.name} ({selected.x:.1f}, {selected.y:.1f}, {selected.z:.1f})"
+            self.status_var.set(f"{info.name}: {info.matrix_engine}{selected_text}")
         except Exception as error:
             self.status_var.set(str(error))
             messagebox.showerror("Render failed", str(error))
