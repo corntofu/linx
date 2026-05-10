@@ -12,6 +12,7 @@ import numpy as np
 class Camera:
     view: np.ndarray
     projection: np.ndarray
+    eye: np.ndarray | None = None
 
     @classmethod
     def look_at_perspective(
@@ -27,6 +28,7 @@ class Camera:
         return cls(
             view=look_at(eye, target, up),
             projection=perspective(fovy_degrees, aspect, near, far),
+            eye=np.asarray(eye, dtype=np.float64),
         )
 
 

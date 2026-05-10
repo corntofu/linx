@@ -73,6 +73,12 @@ class BaseBackend:
             np.ascontiguousarray(rhs, dtype=np.float64),
         )
 
+    def inverse(self, matrix: Any, method: str = "schur", min_block: int = 2) -> Array:
+        arr = np.ascontiguousarray(matrix, dtype=np.float64)
+        if method == "schur":
+            return _schur_inverse_numpy(arr, min_block=min_block)
+        return np.linalg.inv(arr)
+
     def normalize(self, value: Any, axis: int = -1, eps: float = 1e-12) -> Array:
         arr = np.asarray(value, dtype=np.float64)
         norm = np.linalg.norm(arr, axis=axis, keepdims=True)
@@ -134,6 +140,14 @@ class LinxBackend(BaseBackend):
         rhs_arr = np.ascontiguousarray(rhs, dtype=np.float64)
         return self._linx.matmul(lhs_arr, rhs_arr)
 
+    def inverse(self, matrix: Any, method: str = "schur", min_block: int = 2) -> Array:
+        arr = np.ascontiguousarray(matrix, dtype=np.float64)
+        if hasattr(self._linx, "inverse"):
+            return self._linx.inverse(arr, method=method, min_block=min_block)
+        if method == "schur" and hasattr(self._linx, "inverse_schur"):
+            return self._linx.inverse_schur(arr, min_block=min_block)
+        return np.linalg.inv(arr)
+
 
 def create_backend(name: str | None = None) -> BaseBackend:
     requested = (name or os.environ.get("LINGRAPHICS_BACKEND") or "auto").lower()
@@ -179,3 +193,31 @@ def _import_linx() -> Any:
             "Build it with `cd ../linx && python3 setup.py build_ext --inplace`, "
             "or run with `--backend numpy`."
         ) from first_error
+
+
+def _schur_inverse_numpy(matrix: Array, min_block: int = 2) -> Array:
+    arr = np.asarray(matrix, dtype=np.float64)
+    if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
+        raise ValueError("Schur inverse requires a square 2D matrix")
+    n = arr.shape[0]
+    if n <= max(1, min_block):
+        return np.linalg.inv(arr)
+
+    split = n // 2
+    a = arr[:split, :split]
+    b = arr[:split, split:]
+    c = arr[split:, :split]
+    d = arr[split:, split:]
+
+    inv_a = _schur_inverse_numpy(a, min_block=min_block)
+    schur = d - c @ inv_a @ b
+    inv_s = _schur_inverse_numpy(schur, min_block=min_block)
+
+    inv_a_b = inv_a @ b
+    inv_s_c = inv_s @ c
+    top_left = inv_a + inv_a_b @ inv_s_c @ inv_a
+    top_right = -inv_a_b @ inv_s
+    bottom_left = -inv_s_c @ inv_a
+    bottom_right = inv_s
+
+    return np.block([[top_left, top_right], [bottom_left, bottom_right]])

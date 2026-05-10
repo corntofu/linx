@@ -7,6 +7,7 @@ from tkinter import messagebox, ttk
 
 import numpy as np
 
+from .benchmark import RenderTiming, SchurTiming, benchmark_backends, benchmark_schur_inverse, parse_sizes
 from .camera import Camera
 from .io import to_uint8
 from .renderer import Renderer
@@ -22,6 +23,7 @@ class LinGraphicsApp(tk.Tk):
 
         self.backend_var = tk.StringVar(value="auto")
         self.shape_var = tk.StringVar(value="cube")
+        self.schur_sizes_var = tk.StringVar(value="64,128,256")
         self.status_var = tk.StringVar(value="")
         self.history = SceneHistory()
         self.renderer: Renderer | None = None
@@ -63,7 +65,7 @@ class LinGraphicsApp(tk.Tk):
         ttk.Combobox(
             shape_row,
             textvariable=self.shape_var,
-            values=("cube", "pyramid"),
+            values=("cube", "pyramid", "sphere", "torus"),
             state="readonly",
             width=12,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -80,6 +82,11 @@ class LinGraphicsApp(tk.Tk):
         ttk.Button(actions, text="Clear", command=self._clear_scene).grid(row=1, column=1, sticky="ew", padx=(4, 0))
         actions.columnconfigure(0, weight=1)
         actions.columnconfigure(1, weight=1)
+
+        ttk.Button(sidebar, text="Benchmark Render", command=self._benchmark).pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(sidebar, text="Schur sizes").pack(anchor="w")
+        ttk.Entry(sidebar, textvariable=self.schur_sizes_var).pack(fill=tk.X, pady=(4, 6))
+        ttk.Button(sidebar, text="Benchmark Schur", command=self._benchmark_schur).pack(fill=tk.X, pady=(0, 10))
 
         rotate_box = ttk.LabelFrame(sidebar, text="Rotate Selected", padding=8)
         rotate_box.pack(fill=tk.X, pady=(0, 10))
@@ -120,6 +127,21 @@ class LinGraphicsApp(tk.Tk):
         self.canvas.bind("<B1-Motion>", self._canvas_drag)
         self.canvas.bind("<ButtonRelease-1>", self._canvas_release)
 
+        results_frame = ttk.LabelFrame(viewport, text="Benchmark Results", padding=6)
+        results_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        results_frame.columnconfigure(0, weight=1)
+        self.results_table = ttk.Treeview(results_frame, show="headings", height=6)
+        self.results_table.grid(row=0, column=0, sticky="ew")
+        y_scroll = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.results_table.yview)
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll = ttk.Scrollbar(results_frame, orient=tk.HORIZONTAL, command=self.results_table.xview)
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        self.results_table.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        self._set_results_table(
+            [("status", "Status", 760)],
+            [("Run Benchmark Render or Benchmark Schur to populate this table.",)],
+        )
+
         self.bind("<Command-z>", lambda _event: self._undo())
         self.bind("<Control-z>", lambda _event: self._undo())
         self.bind("<BackSpace>", lambda _event: self._delete_selected())
@@ -155,6 +177,111 @@ class LinGraphicsApp(tk.Tk):
         self.history.clear()
         self._sync_ui()
         self._render()
+
+    def _benchmark(self) -> None:
+        width = max(240, min(800, self.canvas.winfo_width() or 640))
+        height = max(180, min(600, self.canvas.winfo_height() or 480))
+        object_count = max(1, len(self.history.state.objects))
+        results = benchmark_backends(
+            width=width,
+            height=height,
+            reps=8,
+            warmup=2,
+            objects=object_count,
+            complexity="complex",
+        )
+        self.status_var.set("Benchmark complete")
+        self._show_render_results(results)
+
+    def _benchmark_schur(self) -> None:
+        try:
+            sizes = parse_sizes(self.schur_sizes_var.get())
+            results = benchmark_schur_inverse(sizes=sizes, reps=2, warmup=1, min_block=32)
+            self.status_var.set("Schur benchmark complete")
+            self._show_schur_results(results)
+        except Exception as error:
+            self.status_var.set(str(error))
+            self._set_results_table([("error", "Error", 760)], [(str(error),)])
+
+    def _show_render_results(self, results) -> None:
+        columns = [
+            ("backend", "Backend", 90),
+            ("mean", "Mean ms", 90),
+            ("min", "Min ms", 90),
+            ("max", "Max ms", 90),
+            ("reps", "Reps", 70),
+            ("engine", "Matrix Engine", 340),
+        ]
+        rows = []
+        for result in results:
+            if isinstance(result, RenderTiming):
+                rows.append(
+                    (
+                        result.backend,
+                        f"{result.mean_ms:.2f}",
+                        f"{result.min_ms:.2f}",
+                        f"{result.max_ms:.2f}",
+                        str(result.reps),
+                        result.matrix_engine,
+                    )
+                )
+            else:
+                backend, error = result
+                rows.append((backend, "error", "-", "-", "-", error))
+        self._set_results_table(columns, rows)
+
+    def _show_schur_results(self, results) -> None:
+        columns = [
+            ("backend", "Backend", 80),
+            ("method", "Method", 80),
+            ("size", "Size", 70),
+            ("mean", "Mean ms", 90),
+            ("min", "Min ms", 90),
+            ("max", "Max ms", 90),
+            ("speedup", "Speedup", 90),
+            ("residual", "Residual", 110),
+            ("engine", "Matrix Engine", 300),
+        ]
+        baselines = {
+            (result.backend, result.size): result.mean_ms
+            for result in results
+            if isinstance(result, SchurTiming) and result.method == "lu"
+        }
+        rows = []
+        for result in results:
+            if isinstance(result, SchurTiming):
+                speedup = "-"
+                baseline = baselines.get((result.backend, result.size))
+                if result.method == "schur" and baseline is not None and result.mean_ms > 0.0:
+                    speedup = f"{baseline / result.mean_ms:.2f}x"
+                rows.append(
+                    (
+                        result.backend,
+                        result.method,
+                        str(result.size),
+                        f"{result.mean_ms:.2f}",
+                        f"{result.min_ms:.2f}",
+                        f"{result.max_ms:.2f}",
+                        speedup,
+                        f"{result.residual:.2e}",
+                        result.matrix_engine,
+                    )
+                )
+            else:
+                backend, error, size = result
+                rows.append((backend, "error", str(size), "error", "-", "-", "-", "-", error))
+        self._set_results_table(columns, rows)
+
+    def _set_results_table(self, columns, rows) -> None:
+        column_ids = [column_id for column_id, _label, _width in columns]
+        for item_id in self.results_table.get_children():
+            self.results_table.delete(item_id)
+        self.results_table.configure(columns=column_ids)
+        for column_id, label, width in columns:
+            self.results_table.heading(column_id, text=label)
+            self.results_table.column(column_id, width=width, minwidth=60, stretch=False, anchor=tk.W)
+        for row in rows:
+            self.results_table.insert("", tk.END, values=row)
 
     def _rotate(self, dx: float = 0.0, dy: float = 0.0, dz: float = 0.0) -> None:
         self.history.rotate_selected(dx=dx, dy=dy, dz=dz)
@@ -266,7 +393,11 @@ class LinGraphicsApp(tk.Tk):
                 aspect=width / height,
                 fovy_degrees=48.0,
             )
-            result = self.renderer.render_many(self.history.render_items(include_ids=True), camera=camera)
+            result = self.renderer.render_many(
+                self.history.render_items(include_ids=True, include_ground=True),
+                camera=camera,
+                backface_culling=False,
+            )
             self._object_ids = result.object_ids
             self._photo = _photo_from_image(result.image)
             self.canvas.delete("all")

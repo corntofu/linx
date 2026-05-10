@@ -51,6 +51,46 @@ cd lingraphics
 
 그래픽은 단색 배경 대신 그라데이션/비네트 배경, rim light 느낌의 추가 음영, 선택 도형의 노란 외곽 표시를 사용합니다. 클릭 선택은 렌더러가 같이 만드는 픽셀별 object-id 버퍼로 처리합니다.
 
+현재 렌더러는 조금 더 사실적인 느낌을 위해 diffuse + specular highlight + rim light + depth fog를 섞어 사용하고, GUI/CLI 데모에는 바닥면을 함께 렌더링합니다.
+
+## Schur inverse 그래픽스
+
+렌더러는 조명용 normal matrix를 계산할 때 `inverse(model_3x3).T`가 필요합니다. 이 역행렬 계산은 `backend.inverse(..., method="schur")`를 통해 지나갑니다.
+
+- `linx` 백엔드: 기존 `linx.inverse(method="schur")` 또는 `linx.inverse_schur` 사용
+- `numpy` 백엔드: 순수 NumPy로 구현한 재귀 Schur complement inverse 사용
+
+이렇게 해서 비균일 스케일/회전이 들어간 도형도 Schur inverse 기반 normal matrix로 조명됩니다.
+
+## 렌더링 시간 측정
+
+같은 씬을 `numpy`와 `linx` 백엔드로 각각 여러 번 렌더링하고 평균/최소/최대 시간을 출력합니다.
+
+```bash
+cd lingraphics
+/opt/anaconda3/bin/python3 -m lingraphics.benchmark --width 640 --height 480 --objects 8 --reps 20
+```
+
+복잡한 도형에 대한 벤치마크도 지원합니다. `complex` 모드는 sphere/torus처럼 삼각형 수가 많은 메시를 사용합니다.
+
+```bash
+cd lingraphics
+/opt/anaconda3/bin/python3 -m lingraphics.benchmark --width 160 --height 120 --objects 2 --reps 5 --complexity complex
+```
+
+`--complexity` 값은 `basic`, `mixed`, `complex` 중 하나입니다.
+
+GUI에서도 `Benchmark Render` 버튼으로 짧은 렌더 벤치마크를 실행할 수 있습니다. 결과는 알림창이 아니라 캔버스 아래 `Benchmark Results` 테이블에 표시됩니다.
+
+Schur inverse가 빨라지는 구간을 찾고 싶다면 렌더 benchmark 대신 Schur 전용 모드를 쓰세요. 렌더러의 normal matrix는 3x3이라 Schur의 장점이 잘 드러나지 않지만, 큰 정방행렬 inverse에서는 구간을 직접 조절해 비교할 수 있습니다.
+
+```bash
+cd lingraphics
+/opt/anaconda3/bin/python3 -m lingraphics.benchmark --mode schur --schur-sizes 64,128,256,512 --schur-reps 3 --schur-warmup 1 --schur-min-block 32
+```
+
+`--schur-sizes`는 쉼표로 구분한 정방행렬 크기입니다. 실행 시간이 길어지면 `64,128,256`처럼 줄이고, Schur가 유리한 지점을 더 보고 싶으면 `512,1024`를 추가하세요. GUI에서는 `Schur sizes` 입력칸에 같은 형식으로 크기를 넣고 `Benchmark Schur`를 누르면 앱 내부 테이블에 표시됩니다.
+
 ## Apple M2 최적화 메모
 
 - `linx` 백엔드는 행렬곱/변환을 기존 `linx` C++ 확장으로 넘깁니다. 현재 로컬 빌드는 `Apple Accelerate BLAS/LAPACK (arm64)`로 확인됩니다.

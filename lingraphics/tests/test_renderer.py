@@ -5,6 +5,7 @@ import unittest
 import numpy as np
 
 from lingraphics.backends import create_backend
+from lingraphics.benchmark import benchmark_backends, benchmark_schur_inverse, parse_sizes
 from lingraphics.camera import Camera
 from lingraphics.mesh import Mesh
 from lingraphics.renderer import Renderer
@@ -29,6 +30,18 @@ class RendererTests(unittest.TestCase):
         product = backend.matmul(np.eye(4), np.ones((4, 4)))
         np.testing.assert_allclose(product, np.ones((4, 4)))
 
+    def test_numpy_schur_inverse(self) -> None:
+        backend = create_backend("numpy")
+        matrix = np.array(
+            [
+                [2.0, 0.2, 0.1],
+                [0.3, 1.7, 0.4],
+                [0.2, 0.1, 1.4],
+            ],
+            dtype=np.float64,
+        )
+        np.testing.assert_allclose(backend.inverse(matrix, method="schur"), np.linalg.inv(matrix), atol=1e-10)
+
     def test_backend_toggle_linx_when_available(self) -> None:
         try:
             backend = create_backend("linx")
@@ -37,6 +50,15 @@ class RendererTests(unittest.TestCase):
         self.assertEqual(backend.name, "linx")
         product = backend.matmul(np.eye(4), np.ones((4, 4)))
         np.testing.assert_allclose(product, np.ones((4, 4)))
+        matrix = np.array(
+            [
+                [2.0, 0.2, 0.1],
+                [0.3, 1.7, 0.4],
+                [0.2, 0.1, 1.4],
+            ],
+            dtype=np.float64,
+        )
+        np.testing.assert_allclose(backend.inverse(matrix, method="schur"), np.linalg.inv(matrix), atol=1e-8)
 
     def test_scene_history_add_delete_undo_redo(self) -> None:
         history = SceneHistory()
@@ -79,12 +101,23 @@ class RendererTests(unittest.TestCase):
         history.add_shape("cube")
         history.add_shape("pyramid")
         renderer = Renderer(width=96, height=72, backend="numpy")
-        result = renderer.render_many(history.render_items(include_ids=True))
+        result = renderer.render_many(history.render_items(include_ids=True, include_ground=True), backface_culling=False)
 
         self.assertEqual(result.image.shape, (72, 96, 3))
         self.assertIsNotNone(result.object_ids)
         self.assertTrue((result.object_ids >= 0).any())
         self.assertTrue(np.isfinite(result.depth).any())
+
+    def test_render_benchmark_returns_numpy_timing(self) -> None:
+        results = benchmark_backends(width=48, height=36, reps=1, warmup=0, objects=1, complexity="complex")
+        numpy_result = next(result for result in results if not isinstance(result, tuple) and result.backend == "numpy")
+        self.assertGreaterEqual(numpy_result.mean_ms, 0.0)
+
+    def test_schur_benchmark_size_configuration(self) -> None:
+        self.assertEqual(parse_sizes("4, 8"), [4, 8])
+        results = benchmark_schur_inverse(sizes=[4], reps=1, warmup=0, min_block=2, backends=("numpy",))
+        methods = {result.method for result in results if not isinstance(result, tuple)}
+        self.assertEqual(methods, {"lu", "schur"})
 
 
 if __name__ == "__main__":

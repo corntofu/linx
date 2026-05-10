@@ -37,8 +37,11 @@ class Renderer:
         background: tuple[float, float, float] = (0.035, 0.04, 0.052),
         background_top: tuple[float, float, float] = (0.10, 0.11, 0.14),
         light_direction: tuple[float, float, float] = (-0.45, -0.7, -0.55),
-        ambient: float = 0.22,
+        ambient: float = 0.18,
         diffuse: float = 0.82,
+        specular: float = 0.28,
+        shininess: float = 32.0,
+        fog_strength: float = 0.42,
     ) -> None:
         if width <= 0 or height <= 0:
             raise ValueError("width and height must be positive")
@@ -50,6 +53,9 @@ class Renderer:
         self.light_direction = self.backend.normalize(light_direction)
         self.ambient = float(ambient)
         self.diffuse = float(diffuse)
+        self.specular = float(specular)
+        self.shininess = float(shininess)
+        self.fog_strength = float(fog_strength)
 
     def render(
         self,
@@ -139,6 +145,7 @@ class Renderer:
         mvp = self.backend.matmul(camera.projection, model_view)
         clip = self.backend.matmul(vertices_h, mvp.T)
         world = self.backend.matmul(vertices_h, model.T)[:, :3]
+        normal_matrix = self._normal_matrix(model)
 
         visible = clip[:, 3] > 1e-9
         ndc = np.zeros((clip.shape[0], 3), dtype=np.float64)
@@ -156,8 +163,9 @@ class Renderer:
                 continue
             if not self._inside_clip(ndc[face]):
                 continue
-            shade = self._shade_face(world[face])
-            color = np.clip(mesh.face_colors[face_index] * shade, 0.0, 1.0)
+            normal = self._face_normal(mesh.vertices[face], normal_matrix)
+            color = self._shade_face(normal, world[face].mean(axis=0), mesh.face_colors[face_index], camera)
+            color = self._apply_fog(color, screen[face])
             self._rasterize_triangle(
                 image,
                 depth,
@@ -168,17 +176,44 @@ class Renderer:
                 backface_culling,
             )
 
-    def _shade_face(self, vertices: np.ndarray) -> float:
+    def _normal_matrix(self, model: np.ndarray) -> np.ndarray:
+        linear = np.ascontiguousarray(model[:3, :3], dtype=np.float64)
+        return self.backend.inverse(linear, method="schur", min_block=2).T
+
+    def _face_normal(self, vertices: np.ndarray, normal_matrix: np.ndarray) -> np.ndarray:
         edge_a = vertices[1] - vertices[0]
         edge_b = vertices[2] - vertices[0]
-        normal = np.cross(edge_a, edge_b)
-        norm = np.linalg.norm(normal)
-        if norm < 1e-12:
-            return self.ambient
-        normal /= norm
+        object_normal = np.cross(edge_a, edge_b)
+        transformed = normal_matrix @ object_normal
+        return _normalize(transformed)
+
+    def _shade_face(
+        self,
+        normal: np.ndarray,
+        center: np.ndarray,
+        base_color: np.ndarray,
+        camera: Camera,
+    ) -> np.ndarray:
+        if np.linalg.norm(normal) < 1e-12:
+            return np.clip(base_color * self.ambient, 0.0, 1.0)
         diffuse = max(0.0, float(np.dot(normal, -self.light_direction)))
-        rim = 0.12 * (1.0 - abs(float(normal[2])))
-        return min(1.08, self.ambient + self.diffuse * diffuse + rim)
+        if camera.eye is not None:
+            view_dir = _normalize(camera.eye - center)
+        else:
+            view_dir = _normalize(np.array([0.0, 0.0, 1.0], dtype=np.float64) - center)
+        half_dir = _normalize((-self.light_direction) + view_dir)
+        spec_angle = max(0.0, float(np.dot(normal, half_dir)))
+        specular = self.specular * (spec_angle ** self.shininess)
+        rim = 0.14 * ((1.0 - max(0.0, float(np.dot(normal, view_dir)))) ** 2.0)
+
+        lit = base_color * (self.ambient + self.diffuse * diffuse + rim)
+        highlight = np.array([1.0, 0.96, 0.86], dtype=np.float64) * specular
+        return np.clip(lit + highlight, 0.0, 1.0)
+
+    def _apply_fog(self, color: np.ndarray, triangle: np.ndarray) -> np.ndarray:
+        mean_depth = float(np.mean(triangle[:, 2]))
+        fog = np.clip((mean_depth - 0.35) * self.fog_strength, 0.0, 0.55)
+        return np.clip(color * (1.0 - fog) + self.background_top * fog, 0.0, 1.0)
 
     def _face_draw_order(self, faces: np.ndarray, screen: np.ndarray) -> np.ndarray:
         mean_depth = screen[faces, 2].mean(axis=1)
@@ -240,3 +275,10 @@ def _edge(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
 
 def _edge_grid(a: np.ndarray, b: np.ndarray, p: np.ndarray) -> np.ndarray:
     return (p[..., 0] - a[0]) * (b[1] - a[1]) - (p[..., 1] - a[1]) * (b[0] - a[0])
+
+
+def _normalize(value: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    norm = np.linalg.norm(value)
+    if norm < eps:
+        return value * 0.0
+    return value / norm

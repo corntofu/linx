@@ -29,6 +29,10 @@ class SceneObject:
             return Mesh.cube(size=1.4)
         if self.kind == "pyramid":
             return Mesh.pyramid(size=1.5, height=1.7)
+        if self.kind == "sphere":
+            return Mesh.uv_sphere()
+        if self.kind == "torus":
+            return Mesh.torus()
         raise ValueError(f"unknown shape kind {self.kind!r}")
 
     def model_matrix(self) -> np.ndarray:
@@ -84,8 +88,8 @@ class SceneHistory:
         return self.state
 
     def add_shape(self, kind: str) -> SceneState:
-        if kind not in {"cube", "pyramid"}:
-            raise ValueError("kind must be 'cube' or 'pyramid'")
+        if kind not in {"cube", "pyramid", "sphere", "torus"}:
+            raise ValueError("kind must be 'cube', 'pyramid', 'sphere', or 'torus'")
         shape_id = self.state.next_id
         offset = ((shape_id - 1) % 5 - 2) * 0.72
         obj = SceneObject(
@@ -186,7 +190,12 @@ class SceneHistory:
         self.state = self._redo.pop()
         return self.state
 
-    def render_items(self, include_ids: bool = False):
+    def render_items(self, include_ids: bool = False, include_ground: bool = False):
+        items = []
+        if include_ground:
+            items.append((Mesh.ground(), np.eye(4, dtype=np.float64)))
         if include_ids:
-            return [(obj.mesh(), obj.model_matrix(), obj.id) for obj in self.state.objects]
-        return [(obj.mesh(), obj.model_matrix()) for obj in self.state.objects]
+            items.extend((obj.mesh(), obj.model_matrix(), obj.id) for obj in self.state.objects)
+        else:
+            items.extend((obj.mesh(), obj.model_matrix()) for obj in self.state.objects)
+        return items

@@ -9,7 +9,7 @@ from pathlib import Path
 from .camera import Camera
 from .mesh import Mesh
 from .renderer import Renderer
-from .transforms import rotate_x, rotate_y
+from .transforms import identity, rotate_x, rotate_y
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -33,7 +33,11 @@ def main(argv: list[str] | None = None) -> None:
     model = rotate_y(radians) @ rotate_x(radians * 0.55)
 
     renderer = Renderer(width=args.width, height=args.height, backend=args.backend)
-    result = renderer.render(mesh, camera=camera, model=model)
+    result = renderer.render_many(
+        [(Mesh.ground(), identity()), (mesh, model)],
+        camera=camera,
+        backface_culling=False,
+    )
     result.save(str(args.output))
 
     info = result.backend

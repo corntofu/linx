@@ -8,7 +8,8 @@ import numpy as np
 
 
 def to_uint8(image: np.ndarray) -> np.ndarray:
-    return (np.clip(image, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+    srgb = np.power(np.clip(image, 0.0, 1.0), 1.0 / 2.2)
+    return (srgb * 255.0 + 0.5).astype(np.uint8)
 
 
 def save_image(path: str | Path, image: np.ndarray) -> Path:

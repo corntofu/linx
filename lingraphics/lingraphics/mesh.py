@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import numpy as np
 
@@ -115,3 +116,150 @@ class Mesh:
             dtype=np.float64,
         )
         return cls(vertices=vertices, faces=faces, face_colors=colors)
+
+    @classmethod
+    def ground(cls, size: float = 7.0, y: float = -0.86) -> "Mesh":
+        half = size * 0.5
+        vertices = np.array(
+            [
+                [-half, y, -half],
+                [half, y, -half],
+                [half, y, half],
+                [-half, y, half],
+            ],
+            dtype=np.float64,
+        )
+        faces = np.array([[0, 2, 1], [0, 3, 2]], dtype=np.int64)
+        colors = np.array(
+            [
+                [0.20, 0.22, 0.24],
+                [0.17, 0.19, 0.21],
+            ],
+            dtype=np.float64,
+        )
+        return cls(vertices=vertices, faces=faces, face_colors=colors)
+
+    @classmethod
+    def uv_sphere(cls, radius: float = 0.82, rings: int = 12, segments: int = 24) -> "Mesh":
+        rings = max(4, int(rings))
+        segments = max(8, int(segments))
+        vertices = []
+        for ring in range(rings + 1):
+            phi = math.pi * ring / rings
+            y = radius * math.cos(phi)
+            radial = radius * math.sin(phi)
+            for segment in range(segments):
+                theta = 2.0 * math.pi * segment / segments
+                vertices.append(
+                    [
+                        radial * math.cos(theta),
+                        y,
+                        radial * math.sin(theta),
+                    ]
+                )
+        vertices_arr = np.asarray(vertices, dtype=np.float64)
+
+        raw_faces = []
+        for ring in range(rings):
+            for segment in range(segments):
+                a = ring * segments + segment
+                b = ring * segments + ((segment + 1) % segments)
+                c = (ring + 1) * segments + segment
+                d = (ring + 1) * segments + ((segment + 1) % segments)
+                raw_faces.append([a, c, b])
+                raw_faces.append([b, c, d])
+        faces, colors = _oriented_faces(vertices_arr, raw_faces, _sphere_color)
+        return cls(vertices=vertices_arr, faces=faces, face_colors=colors)
+
+    @classmethod
+    def torus(
+        cls,
+        major_radius: float = 0.72,
+        minor_radius: float = 0.25,
+        major_segments: int = 28,
+        minor_segments: int = 10,
+    ) -> "Mesh":
+        major_segments = max(8, int(major_segments))
+        minor_segments = max(6, int(minor_segments))
+        vertices = []
+        for major in range(major_segments):
+            theta = 2.0 * math.pi * major / major_segments
+            cos_theta = math.cos(theta)
+            sin_theta = math.sin(theta)
+            for minor in range(minor_segments):
+                phi = 2.0 * math.pi * minor / minor_segments
+                ring = major_radius + minor_radius * math.cos(phi)
+                vertices.append(
+                    [
+                        ring * cos_theta,
+                        minor_radius * math.sin(phi),
+                        ring * sin_theta,
+                    ]
+                )
+        vertices_arr = np.asarray(vertices, dtype=np.float64)
+
+        faces = []
+        colors = []
+        for major in range(major_segments):
+            for minor in range(minor_segments):
+                a = major * minor_segments + minor
+                b = major * minor_segments + ((minor + 1) % minor_segments)
+                c = ((major + 1) % major_segments) * minor_segments + minor
+                d = ((major + 1) % major_segments) * minor_segments + ((minor + 1) % minor_segments)
+                for face in ([a, c, b], [b, c, d]):
+                    oriented = _orient_torus_face(vertices_arr, face, major_radius)
+                    faces.append(oriented)
+                    center = vertices_arr[oriented].mean(axis=0)
+                    colors.append(_torus_color(center))
+        return cls(
+            vertices=vertices_arr,
+            faces=np.asarray(faces, dtype=np.int64),
+            face_colors=np.asarray(colors, dtype=np.float64),
+        )
+
+
+def _oriented_faces(vertices: np.ndarray, raw_faces, color_fn):
+    faces = []
+    colors = []
+    for face in raw_faces:
+        tri = vertices[np.asarray(face, dtype=np.int64)]
+        normal = np.cross(tri[1] - tri[0], tri[2] - tri[0])
+        if np.linalg.norm(normal) < 1e-12:
+            continue
+        center = tri.mean(axis=0)
+        if np.dot(normal, center) < 0.0:
+            face = [face[0], face[2], face[1]]
+            tri = vertices[np.asarray(face, dtype=np.int64)]
+            center = tri.mean(axis=0)
+        faces.append(face)
+        colors.append(color_fn(center))
+    return np.asarray(faces, dtype=np.int64), np.asarray(colors, dtype=np.float64)
+
+
+def _orient_torus_face(vertices: np.ndarray, face, major_radius: float):
+    tri = vertices[np.asarray(face, dtype=np.int64)]
+    normal = np.cross(tri[1] - tri[0], tri[2] - tri[0])
+    center = tri.mean(axis=0)
+    theta = math.atan2(center[2], center[0])
+    tube_center = np.array(
+        [major_radius * math.cos(theta), 0.0, major_radius * math.sin(theta)],
+        dtype=np.float64,
+    )
+    outward = center - tube_center
+    if np.dot(normal, outward) < 0.0:
+        return [face[0], face[2], face[1]]
+    return face
+
+
+def _sphere_color(center: np.ndarray) -> np.ndarray:
+    t = np.clip((center[1] + 0.82) / 1.64, 0.0, 1.0)
+    cool = np.array([0.32, 0.56, 0.92], dtype=np.float64)
+    warm = np.array([0.96, 0.48, 0.30], dtype=np.float64)
+    return cool * (1.0 - t) + warm * t
+
+
+def _torus_color(center: np.ndarray) -> np.ndarray:
+    t = 0.5 + 0.5 * math.sin(3.0 * math.atan2(center[2], center[0]))
+    teal = np.array([0.22, 0.72, 0.78], dtype=np.float64)
+    violet = np.array([0.68, 0.40, 0.88], dtype=np.float64)
+    return teal * (1.0 - t) + violet * t
