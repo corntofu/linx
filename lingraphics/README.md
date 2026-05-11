@@ -102,6 +102,13 @@ cd lingraphics
 /opt/anaconda3/bin/python3 examples/time_tralalero_cube_video_csv.py --width 320 --height 240 --fps 10 --duration 3 --csv-output renders/video_compare/timing.csv
 ```
 
+렌더링 중 역행렬 알고리즘 성능을 직접 보려면 inverse stress task를 사용합니다. 같은 2초 영상 렌더 루프 안에서 매 프레임마다 큰 행렬 역행렬을 한 번 수행하고 CSV로 기록합니다.
+
+```bash
+cd lingraphics
+/opt/anaconda3/bin/python3 examples/render_inverse_task_video_csv.py --sizes 512,1024,2048 --width 160 --height 120 --fps 5 --duration 2 --csv-output renders/inverse_task/timing.csv
+```
+
 Schur inverse가 빨라지는 구간을 찾고 싶다면 렌더 benchmark 대신 Schur 전용 모드를 쓰세요. 렌더러의 normal matrix는 3x3이라 Schur의 장점이 잘 드러나지 않지만, 큰 정방행렬 inverse에서는 구간을 직접 조절해 비교할 수 있습니다.
 
 ```bash

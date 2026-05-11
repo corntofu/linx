@@ -8,8 +8,10 @@ import math
 from pathlib import Path
 import time
 
+import numpy as np
 from PIL import Image
 
+from .backends import create_backend
 from .camera import Camera, orbit_eye
 from .mesh import Mesh
 from .renderer import Renderer
@@ -26,6 +28,7 @@ class VideoTiming:
     fps: int
     render_seconds: float
     encode_seconds: float
+    inverse_seconds: float = 0.0
 
     @property
     def average_frame_ms(self) -> float:
@@ -40,6 +43,10 @@ def render_tralalero_cube_video(
     fps: int = 10,
     duration_seconds: float = 3.0,
     normal_inverse_method: str = "schur",
+    inverse_task_backend: str | None = None,
+    inverse_task_method: str = "schur",
+    inverse_task_size: int | None = None,
+    inverse_task_min_block: int = 32,
 ) -> VideoTiming:
     output_path = Path(output)
     if output_path.suffix.lower() != ".gif":
@@ -62,9 +69,12 @@ def render_tralalero_cube_video(
     ground = Mesh.ground(size=7.0, y=-1.16)
     tralalero = Mesh.tralalero_tralala()
     cube = Mesh.cube(size=1.0)
+    inverse_backend = create_backend(inverse_task_backend) if inverse_task_backend else None
+    inverse_matrix = _make_inverse_task_matrix(inverse_task_size) if inverse_task_size else None
 
     frames: list[Image.Image] = []
     last_backend = None
+    inverse_seconds = 0.0
     render_start = time.perf_counter()
     for frame_index in range(frame_count):
         t = frame_index / max(1, frame_count - 1)
@@ -98,6 +108,14 @@ def render_tralalero_cube_video(
             camera=camera,
             backface_culling=False,
         )
+        if inverse_backend is not None and inverse_matrix is not None:
+            inverse_start = time.perf_counter()
+            inverse_backend.inverse(
+                inverse_matrix,
+                method=inverse_task_method,
+                min_block=inverse_task_min_block,
+            )
+            inverse_seconds += time.perf_counter() - inverse_start
         last_backend = result.backend
         frames.append(Image.fromarray(result.to_uint8(), mode="RGB"))
     render_seconds = time.perf_counter() - render_start
@@ -123,7 +141,15 @@ def render_tralalero_cube_video(
         fps=fps,
         render_seconds=render_seconds,
         encode_seconds=encode_seconds,
+        inverse_seconds=inverse_seconds,
     )
+
+
+def _make_inverse_task_matrix(size: int, seed: int = 4040) -> np.ndarray:
+    rng = np.random.default_rng(seed + size)
+    matrix = rng.normal(0.0, 1.0 / math.sqrt(size), size=(size, size))
+    matrix += np.eye(size, dtype=np.float64) * 3.0
+    return np.ascontiguousarray(matrix, dtype=np.float64)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -135,6 +161,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--fps", type=int, default=10)
     parser.add_argument("--duration", type=float, default=3.0)
     parser.add_argument("--normal-inverse-method", choices=["lu", "schur"], default="schur")
+    parser.add_argument("--inverse-task-backend", choices=["numpy", "linx"])
+    parser.add_argument("--inverse-task-method", choices=["lu", "schur"], default="schur")
+    parser.add_argument("--inverse-task-size", type=int)
+    parser.add_argument("--inverse-task-min-block", type=int, default=32)
     args = parser.parse_args(argv)
 
     timing = render_tralalero_cube_video(
@@ -145,6 +175,10 @@ def main(argv: list[str] | None = None) -> None:
         fps=args.fps,
         duration_seconds=args.duration,
         normal_inverse_method=args.normal_inverse_method,
+        inverse_task_backend=args.inverse_task_backend,
+        inverse_task_method=args.inverse_task_method,
+        inverse_task_size=args.inverse_task_size,
+        inverse_task_min_block=args.inverse_task_min_block,
     )
     print(f"wrote {timing.output}")
     print(f"backend={timing.backend}")
@@ -154,6 +188,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"fps={timing.fps}")
     print(f"render_seconds={timing.render_seconds:.3f}")
     print(f"average_frame_ms={timing.average_frame_ms:.2f}")
+    print(f"inverse_seconds={timing.inverse_seconds:.3f}")
     print(f"encode_seconds={timing.encode_seconds:.3f}")
 
 
