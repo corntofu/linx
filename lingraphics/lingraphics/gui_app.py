@@ -8,7 +8,7 @@ from tkinter import messagebox, ttk
 import numpy as np
 
 from .benchmark import RenderTiming, SchurTiming, benchmark_backends, benchmark_schur_inverse, parse_sizes
-from .camera import Camera
+from .camera import Camera, orbit_eye
 from .io import to_uint8
 from .renderer import Renderer
 from .scene import SceneHistory
@@ -32,6 +32,9 @@ class LinGraphicsApp(tk.Tk):
         self._drag_start: tuple[int, int] | None = None
         self._drag_base_state = None
         self._drag_has_motion = False
+        self._camera_yaw = 33.0
+        self._camera_pitch = 23.0
+        self._camera_radius = 5.6
 
         self._build_ui()
         self.history.add_shape("cube")
@@ -65,7 +68,7 @@ class LinGraphicsApp(tk.Tk):
         ttk.Combobox(
             shape_row,
             textvariable=self.shape_var,
-            values=("cube", "pyramid", "sphere", "torus"),
+            values=("cube", "pyramid", "sphere", "torus", "tralalero"),
             state="readonly",
             width=12,
         ).pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -146,10 +149,10 @@ class LinGraphicsApp(tk.Tk):
         self.bind("<Control-z>", lambda _event: self._undo())
         self.bind("<BackSpace>", lambda _event: self._delete_selected())
         self.bind("<Delete>", lambda _event: self._delete_selected())
-        self.bind("<Left>", lambda _event: self._move(dx=-0.18))
-        self.bind("<Right>", lambda _event: self._move(dx=0.18))
-        self.bind("<Up>", lambda _event: self._move(dy=0.18))
-        self.bind("<Down>", lambda _event: self._move(dy=-0.18))
+        self.bind("<Left>", lambda _event: self._rotate_camera(dyaw=-8.0))
+        self.bind("<Right>", lambda _event: self._rotate_camera(dyaw=8.0))
+        self.bind("<Up>", lambda _event: self._rotate_camera(dpitch=6.0))
+        self.bind("<Down>", lambda _event: self._rotate_camera(dpitch=-6.0))
         self.bind("w", lambda _event: self._move(dz=0.18))
         self.bind("s", lambda _event: self._move(dz=-0.18))
 
@@ -293,6 +296,11 @@ class LinGraphicsApp(tk.Tk):
         self._sync_ui()
         self._render()
 
+    def _rotate_camera(self, dyaw: float = 0.0, dpitch: float = 0.0) -> None:
+        self._camera_yaw = (self._camera_yaw + dyaw) % 360.0
+        self._camera_pitch = min(72.0, max(-18.0, self._camera_pitch + dpitch))
+        self._render()
+
     def _select_from_list(self, _event: tk.Event) -> None:
         selection = self.object_list.curselection()
         if not selection:
@@ -388,7 +396,7 @@ class LinGraphicsApp(tk.Tk):
         try:
             self.renderer = Renderer(width=width, height=height, backend=self.backend_var.get())
             camera = Camera.look_at_perspective(
-                eye=(2.9, 2.1, 4.4),
+                eye=orbit_eye(self._camera_yaw, self._camera_pitch, self._camera_radius),
                 target=(0.0, 0.0, 0.0),
                 aspect=width / height,
                 fovy_degrees=48.0,
@@ -408,7 +416,8 @@ class LinGraphicsApp(tk.Tk):
             selected_text = ""
             if selected is not None:
                 selected_text = f" | {selected.name} ({selected.x:.1f}, {selected.y:.1f}, {selected.z:.1f})"
-            self.status_var.set(f"{info.name}: {info.matrix_engine}{selected_text}")
+            camera_text = f" | camera yaw={self._camera_yaw:.0f} pitch={self._camera_pitch:.0f}"
+            self.status_var.set(f"{info.name}: {info.matrix_engine}{camera_text}{selected_text}")
         except Exception as error:
             self.status_var.set(str(error))
             messagebox.showerror("Render failed", str(error))

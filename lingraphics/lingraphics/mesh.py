@@ -217,6 +217,43 @@ class Mesh:
             face_colors=np.asarray(colors, dtype=np.float64),
         )
 
+    @classmethod
+    def tralalero_tralala(cls) -> "Mesh":
+        blue = np.array([0.18, 0.46, 0.88], dtype=np.float64)
+        light_blue = np.array([0.30, 0.68, 0.96], dtype=np.float64)
+        fin_blue = np.array([0.10, 0.30, 0.66], dtype=np.float64)
+        shoe_blue = np.array([0.08, 0.78, 0.95], dtype=np.float64)
+        sole = np.array([0.92, 0.95, 0.98], dtype=np.float64)
+        eye_white = np.array([0.97, 0.98, 1.00], dtype=np.float64)
+        eye_dark = np.array([0.02, 0.03, 0.05], dtype=np.float64)
+
+        parts = [
+            _colored(_transform_mesh(cls.uv_sphere(radius=1.0, rings=10, segments=20), _trs((0.0, 0.0, 0.0), (0.54, 0.33, 1.22))), blue),
+            _colored(_transform_mesh(cls.uv_sphere(radius=1.0, rings=8, segments=18), _trs((0.0, 0.02, -1.12), (0.43, 0.28, 0.42))), light_blue),
+            _colored(_fin_mesh("dorsal"), fin_blue),
+            _colored(_fin_mesh("left"), fin_blue),
+            _colored(_fin_mesh("right"), fin_blue),
+            _colored(_fin_mesh("tail_top"), fin_blue),
+            _colored(_fin_mesh("tail_bottom"), fin_blue),
+            _colored(_transform_mesh(cls.uv_sphere(radius=1.0, rings=6, segments=12), _trs((-0.18, 0.16, -1.43), (0.07, 0.07, 0.04))), eye_white),
+            _colored(_transform_mesh(cls.uv_sphere(radius=1.0, rings=6, segments=12), _trs((0.18, 0.16, -1.43), (0.07, 0.07, 0.04))), eye_white),
+            _colored(_transform_mesh(cls.uv_sphere(radius=1.0, rings=4, segments=10), _trs((-0.18, 0.16, -1.48), (0.03, 0.03, 0.02))), eye_dark),
+            _colored(_transform_mesh(cls.uv_sphere(radius=1.0, rings=4, segments=10), _trs((0.18, 0.16, -1.48), (0.03, 0.03, 0.02))), eye_dark),
+        ]
+
+        leg_positions = [(-0.33, -0.63, -0.34), (0.33, -0.63, -0.34), (0.0, -0.63, 0.34)]
+        for x, y, z in leg_positions:
+            parts.append(
+                _colored(
+                    _transform_mesh(cls.uv_sphere(radius=1.0, rings=6, segments=12), _trs((x, y, z), (0.11, 0.46, 0.13))),
+                    blue,
+                )
+            )
+            parts.append(_colored(_transform_mesh(cls.cube(size=1.0), _trs((x, y - 0.48, z - 0.02), (0.30, 0.11, 0.42))), shoe_blue))
+            parts.append(_colored(_transform_mesh(cls.cube(size=1.0), _trs((x, y - 0.56, z - 0.02), (0.34, 0.06, 0.46))), sole))
+
+        return _merge_meshes(parts)
+
 
 def _oriented_faces(vertices: np.ndarray, raw_faces, color_fn):
     faces = []
@@ -263,3 +300,102 @@ def _torus_color(center: np.ndarray) -> np.ndarray:
     teal = np.array([0.22, 0.72, 0.78], dtype=np.float64)
     violet = np.array([0.68, 0.40, 0.88], dtype=np.float64)
     return teal * (1.0 - t) + violet * t
+
+
+def _trs(translation, factors) -> np.ndarray:
+    matrix = np.eye(4, dtype=np.float64)
+    matrix[0, 0] = factors[0]
+    matrix[1, 1] = factors[1]
+    matrix[2, 2] = factors[2]
+    matrix[:3, 3] = translation
+    return matrix
+
+
+def _transform_mesh(mesh: Mesh, matrix: np.ndarray) -> Mesh:
+    vertices_h = np.concatenate([mesh.vertices, np.ones((mesh.vertices.shape[0], 1), dtype=np.float64)], axis=1)
+    vertices = (vertices_h @ matrix.T)[:, :3]
+    return Mesh(vertices=vertices, faces=mesh.faces, face_colors=mesh.face_colors)
+
+
+def _colored(mesh: Mesh, color: np.ndarray) -> Mesh:
+    colors = np.tile(np.asarray(color, dtype=np.float64), (mesh.faces.shape[0], 1))
+    return Mesh(vertices=mesh.vertices, faces=mesh.faces, face_colors=colors)
+
+
+def _merge_meshes(meshes) -> Mesh:
+    vertices = []
+    faces = []
+    colors = []
+    offset = 0
+    for mesh in meshes:
+        vertices.append(mesh.vertices)
+        faces.append(mesh.faces + offset)
+        colors.append(mesh.face_colors)
+        offset += mesh.vertices.shape[0]
+    return Mesh(
+        vertices=np.vstack(vertices),
+        faces=np.vstack(faces),
+        face_colors=np.vstack(colors),
+    )
+
+
+def _fin_mesh(kind: str) -> Mesh:
+    if kind == "dorsal":
+        vertices = np.array(
+            [
+                [-0.08, 0.28, -0.15],
+                [0.08, 0.28, -0.15],
+                [0.00, 0.72, 0.10],
+                [0.00, 0.30, 0.42],
+            ],
+            dtype=np.float64,
+        )
+        faces = np.array([[0, 1, 2], [0, 2, 3], [1, 3, 2], [0, 3, 1]], dtype=np.int64)
+    elif kind == "left":
+        vertices = np.array(
+            [
+                [-0.42, -0.04, -0.18],
+                [-0.92, -0.20, -0.05],
+                [-0.46, -0.12, 0.22],
+                [-0.38, 0.04, 0.02],
+            ],
+            dtype=np.float64,
+        )
+        faces = np.array([[0, 1, 3], [1, 2, 3], [0, 3, 2], [0, 2, 1]], dtype=np.int64)
+    elif kind == "right":
+        vertices = np.array(
+            [
+                [0.42, -0.04, -0.18],
+                [0.92, -0.20, -0.05],
+                [0.46, -0.12, 0.22],
+                [0.38, 0.04, 0.02],
+            ],
+            dtype=np.float64,
+        )
+        faces = np.array([[0, 3, 1], [1, 3, 2], [0, 2, 3], [0, 1, 2]], dtype=np.int64)
+    elif kind == "tail_top":
+        vertices = np.array(
+            [
+                [-0.05, 0.02, 1.05],
+                [0.05, 0.02, 1.05],
+                [0.00, 0.54, 1.55],
+                [0.00, 0.02, 1.68],
+            ],
+            dtype=np.float64,
+        )
+        faces = np.array([[0, 1, 2], [0, 2, 3], [1, 3, 2], [0, 3, 1]], dtype=np.int64)
+    elif kind == "tail_bottom":
+        vertices = np.array(
+            [
+                [-0.05, -0.02, 1.05],
+                [0.05, -0.02, 1.05],
+                [0.00, -0.54, 1.55],
+                [0.00, -0.02, 1.68],
+            ],
+            dtype=np.float64,
+        )
+        faces = np.array([[0, 2, 1], [0, 3, 2], [1, 2, 3], [0, 1, 3]], dtype=np.int64)
+    else:
+        raise ValueError(f"unknown fin kind {kind!r}")
+    colors = np.ones((faces.shape[0], 3), dtype=np.float64)
+    return Mesh(vertices=vertices, faces=faces, face_colors=colors)

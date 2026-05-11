@@ -19,10 +19,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--height", type=int, default=512)
     parser.add_argument("--angle", type=float, default=32.0, help="rotation angle in degrees")
     parser.add_argument("--output", type=Path, default=Path("renders/cube.ppm"))
-    parser.add_argument("--mesh", choices=["cube", "pyramid"], default="cube")
+    parser.add_argument("--mesh", choices=["cube", "pyramid", "sphere", "torus", "tralalero"], default="cube")
     args = parser.parse_args(argv)
 
-    mesh = Mesh.cube() if args.mesh == "cube" else Mesh.pyramid()
+    mesh = {
+        "cube": Mesh.cube,
+        "pyramid": Mesh.pyramid,
+        "sphere": Mesh.uv_sphere,
+        "torus": Mesh.torus,
+        "tralalero": Mesh.tralalero_tralala,
+    }[args.mesh]()
     camera = Camera.look_at_perspective(
         eye=(2.6, 1.9, 3.6),
         target=(0.0, 0.0, 0.0),

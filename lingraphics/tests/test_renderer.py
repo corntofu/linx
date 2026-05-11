@@ -6,7 +6,7 @@ import numpy as np
 
 from lingraphics.backends import create_backend
 from lingraphics.benchmark import benchmark_backends, benchmark_schur_inverse, parse_sizes
-from lingraphics.camera import Camera
+from lingraphics.camera import Camera, orbit_eye
 from lingraphics.mesh import Mesh
 from lingraphics.renderer import Renderer
 from lingraphics.scene import SceneHistory
@@ -23,6 +23,14 @@ class RendererTests(unittest.TestCase):
         self.assertEqual(result.depth.shape, (72, 96))
         self.assertTrue(np.isfinite(result.depth).any())
         self.assertGreater(float(result.image.max()), float(renderer.background.max()))
+
+    def test_orbit_eye_rotates_camera_position(self) -> None:
+        front = orbit_eye(0.0, 0.0, 5.0)
+        side = orbit_eye(90.0, 0.0, 5.0)
+        self.assertAlmostEqual(front[0], 0.0, places=8)
+        self.assertAlmostEqual(front[2], 5.0, places=8)
+        self.assertAlmostEqual(side[0], 5.0, places=8)
+        self.assertAlmostEqual(side[2], 0.0, places=8)
 
     def test_backend_toggle_numpy(self) -> None:
         backend = create_backend("numpy")
@@ -106,6 +114,16 @@ class RendererTests(unittest.TestCase):
         self.assertEqual(result.image.shape, (72, 96, 3))
         self.assertIsNotNone(result.object_ids)
         self.assertTrue((result.object_ids >= 0).any())
+        self.assertTrue(np.isfinite(result.depth).any())
+
+    def test_tralalero_shape_renders(self) -> None:
+        mesh = Mesh.tralalero_tralala()
+        self.assertGreater(mesh.vertices.shape[0], 0)
+        self.assertGreater(mesh.faces.shape[0], 0)
+        history = SceneHistory()
+        history.add_shape("tralalero")
+        renderer = Renderer(width=96, height=72, backend="numpy")
+        result = renderer.render_many(history.render_items(include_ids=True, include_ground=True), backface_culling=False)
         self.assertTrue(np.isfinite(result.depth).any())
 
     def test_render_benchmark_returns_numpy_timing(self) -> None:

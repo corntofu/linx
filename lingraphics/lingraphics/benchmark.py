@@ -44,9 +44,9 @@ def build_benchmark_scene(count: int = 8, complexity: str = "mixed") -> SceneHis
     if complexity == "basic":
         kind_cycle = ("cube", "pyramid")
     elif complexity == "complex":
-        kind_cycle = ("sphere", "torus")
+        kind_cycle = ("sphere", "torus", "tralalero")
     elif complexity == "mixed":
-        kind_cycle = ("cube", "pyramid", "sphere", "torus")
+        kind_cycle = ("cube", "pyramid", "sphere", "torus", "tralalero")
     else:
         raise ValueError("complexity must be 'basic', 'mixed', or 'complex'")
 

@@ -38,7 +38,7 @@ cd lingraphics
 
 앱에서 가능한 동작:
 
-- `Add`: cube 또는 pyramid 생성
+- `Add`: cube, pyramid, sphere, torus, tralalero 생성
 - `Delete`: 선택한 도형 제거
 - `Undo` / `Redo`: 생성, 제거, 회전, 전체 삭제 되돌리기/다시 실행
 - `X` / `Y` / `Z`: 선택한 도형 회전
@@ -47,7 +47,7 @@ cd lingraphics
 - 캔버스 드래그: 선택한 도형 이동
 - `Backend`: `auto`, `numpy`, `linx` 렌더링 백엔드 토글
 
-키보드 단축키는 `Cmd+Z` 또는 `Ctrl+Z` 실행 취소, `Delete`/`Backspace` 삭제, 방향키 이동, `W`/`S` 앞뒤 이동입니다.
+키보드 단축키는 `Cmd+Z` 또는 `Ctrl+Z` 실행 취소, `Delete`/`Backspace` 삭제, 방향키 카메라 뷰 회전, `W`/`S` 선택 도형 앞뒤 이동입니다.
 
 그래픽은 단색 배경 대신 그라데이션/비네트 배경, rim light 느낌의 추가 음영, 선택 도형의 노란 외곽 표시를 사용합니다. 클릭 선택은 렌더러가 같이 만드는 픽셀별 object-id 버퍼로 처리합니다.
 
@@ -72,6 +72,8 @@ cd lingraphics
 ```
 
 복잡한 도형에 대한 벤치마크도 지원합니다. `complex` 모드는 sphere/torus처럼 삼각형 수가 많은 메시를 사용합니다.
+
+`tralalero`는 Tralalero Tralala를 stylized mesh로 만든 도형입니다. 파란 상어 몸통, 세 개의 지느러미 다리, 밝은 운동화 실루엣을 조합했고 특정 브랜드 로고는 넣지 않았습니다.
 
 ```bash
 cd lingraphics

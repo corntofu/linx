@@ -76,6 +76,28 @@ def perspective(
     return mat
 
 
+def orbit_eye(
+    yaw_degrees: float,
+    pitch_degrees: float,
+    radius: float,
+    target: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> tuple[float, float, float]:
+    yaw = math.radians(yaw_degrees)
+    pitch = math.radians(pitch_degrees)
+    target_v = np.asarray(target, dtype=np.float64)
+    cp = math.cos(pitch)
+    offset = np.array(
+        [
+            radius * math.sin(yaw) * cp,
+            radius * math.sin(pitch),
+            radius * math.cos(yaw) * cp,
+        ],
+        dtype=np.float64,
+    )
+    eye = target_v + offset
+    return (float(eye[0]), float(eye[1]), float(eye[2]))
+
+
 def _normalize(value: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     norm = np.linalg.norm(value)
     if norm < eps:

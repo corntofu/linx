@@ -33,6 +33,8 @@ class SceneObject:
             return Mesh.uv_sphere()
         if self.kind == "torus":
             return Mesh.torus()
+        if self.kind == "tralalero":
+            return Mesh.tralalero_tralala()
         raise ValueError(f"unknown shape kind {self.kind!r}")
 
     def model_matrix(self) -> np.ndarray:
@@ -88,14 +90,15 @@ class SceneHistory:
         return self.state
 
     def add_shape(self, kind: str) -> SceneState:
-        if kind not in {"cube", "pyramid", "sphere", "torus"}:
-            raise ValueError("kind must be 'cube', 'pyramid', 'sphere', or 'torus'")
+        if kind not in {"cube", "pyramid", "sphere", "torus", "tralalero"}:
+            raise ValueError("kind must be 'cube', 'pyramid', 'sphere', 'torus', or 'tralalero'")
         shape_id = self.state.next_id
         offset = ((shape_id - 1) % 5 - 2) * 0.72
+        display_name = "Tralalero Tralala" if kind == "tralalero" else kind.title()
         obj = SceneObject(
             id=shape_id,
             kind=kind,
-            name=f"{kind.title()} {shape_id}",
+            name=f"{display_name} {shape_id}",
             x=offset,
             ry=25.0 + shape_id * 12.0,
             size=0.92,
