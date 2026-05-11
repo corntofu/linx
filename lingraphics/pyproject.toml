@@ -18,6 +18,7 @@ dev = ["pytest"]
 lingraphics-demo = "lingraphics.cli:main"
 lingraphics-gui = "lingraphics.gui_app:main"
 lingraphics-benchmark = "lingraphics.benchmark:main"
+lingraphics-video = "lingraphics.video:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

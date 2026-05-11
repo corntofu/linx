@@ -84,6 +84,24 @@ cd lingraphics
 
 GUI에서도 `Benchmark Render` 버튼으로 짧은 렌더 벤치마크를 실행할 수 있습니다. 결과는 알림창이 아니라 캔버스 아래 `Benchmark Results` 테이블에 표시됩니다.
 
+## 3초 애니메이션 렌더링
+
+Tralalero Tralala가 cube를 갖고 노는 3초짜리 animated GIF를 렌더링합니다. 이 환경에는 `ffmpeg`가 없어서 MP4 대신 GIF로 저장합니다.
+
+```bash
+cd lingraphics
+/opt/anaconda3/bin/python3 -m lingraphics.video --backend linx --width 320 --height 240 --fps 10 --duration 3 --output renders/tralalero_cube.gif
+```
+
+명령은 전체 렌더 시간, 프레임당 평균 시간, GIF 인코딩 시간을 출력합니다.
+
+세 모드 `numpy`, `linx`, `linx-schur`로 같은 3초 애니메이션을 렌더링하고 CSV 표로 비교하려면:
+
+```bash
+cd lingraphics
+/opt/anaconda3/bin/python3 examples/time_tralalero_cube_video_csv.py --width 320 --height 240 --fps 10 --duration 3 --csv-output renders/video_compare/timing.csv
+```
+
 Schur inverse가 빨라지는 구간을 찾고 싶다면 렌더 benchmark 대신 Schur 전용 모드를 쓰세요. 렌더러의 normal matrix는 3x3이라 Schur의 장점이 잘 드러나지 않지만, 큰 정방행렬 inverse에서는 구간을 직접 조절해 비교할 수 있습니다.
 
 ```bash
@@ -92,6 +110,13 @@ cd lingraphics
 ```
 
 `--schur-sizes`는 쉼표로 구분한 정방행렬 크기입니다. 실행 시간이 길어지면 `64,128,256`처럼 줄이고, Schur가 유리한 지점을 더 보고 싶으면 `512,1024`를 추가하세요. GUI에서는 `Schur sizes` 입력칸에 같은 형식으로 크기를 넣고 `Benchmark Schur`를 누르면 앱 내부 테이블에 표시됩니다.
+
+NumPy inverse, linx inverse, linx Schur inverse만 직접 비교하려면 아래 예제 스크립트를 쓰면 됩니다.
+
+```bash
+cd lingraphics
+/opt/anaconda3/bin/python3 examples/compare_numpy_linx_schur.py --sizes 64,128,256 --reps 3 --warmup 1 --min-block 32
+```
 
 ## Apple M2 최적화 메모
 

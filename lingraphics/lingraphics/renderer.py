@@ -42,6 +42,8 @@ class Renderer:
         specular: float = 0.28,
         shininess: float = 32.0,
         fog_strength: float = 0.42,
+        normal_inverse_method: str = "schur",
+        normal_inverse_min_block: int = 2,
     ) -> None:
         if width <= 0 or height <= 0:
             raise ValueError("width and height must be positive")
@@ -56,6 +58,8 @@ class Renderer:
         self.specular = float(specular)
         self.shininess = float(shininess)
         self.fog_strength = float(fog_strength)
+        self.normal_inverse_method = normal_inverse_method
+        self.normal_inverse_min_block = int(normal_inverse_min_block)
 
     def render(
         self,
@@ -178,7 +182,11 @@ class Renderer:
 
     def _normal_matrix(self, model: np.ndarray) -> np.ndarray:
         linear = np.ascontiguousarray(model[:3, :3], dtype=np.float64)
-        return self.backend.inverse(linear, method="schur", min_block=2).T
+        return self.backend.inverse(
+            linear,
+            method=self.normal_inverse_method,
+            min_block=self.normal_inverse_min_block,
+        ).T
 
     def _face_normal(self, vertices: np.ndarray, normal_matrix: np.ndarray) -> np.ndarray:
         edge_a = vertices[1] - vertices[0]
