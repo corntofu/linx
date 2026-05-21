@@ -13,6 +13,7 @@ hardware_backend = _backend.hardware_backend
 inverse = _backend.inverse
 inverse_schur = _backend.inverse_schur
 inverse_schur_strassen = _backend.inverse_schur_strassen
+least_squares = _backend.least_squares
 matmul_strassen = _backend.matmul_strassen
 residual_norm = _backend.residual_norm
 solve = _backend.solve
@@ -93,6 +94,7 @@ __all__ = [
     "inverse",
     "inverse_schur",
     "inverse_schur_strassen",
+    "least_squares",
     "matmul",
     "matmul_strassen",
     "neg",
@@ -231,6 +233,10 @@ class Matrix:
     def solve(self, b):
         """Solve A @ X = B."""
         return Matrix(solve(self._data, _as_array(b)))
+
+    def least_squares(self, b, eps=1e-12):
+        """Solve min ||A @ X - B||_2."""
+        return Matrix(least_squares(self._data, _as_array(b), eps=eps))
 
     def condition_number(self, eps=1e-12):
         """Frobenius condition number estimate."""

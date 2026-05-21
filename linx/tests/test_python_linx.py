@@ -47,6 +47,14 @@ def test_solve():
     np.testing.assert_allclose(linx.solve(a, b), np.linalg.solve(a, b), atol=1e-12)
 
 
+def test_least_squares():
+    a = np.array([[1.0, 1.0], [1.0, 2.0], [1.0, 3.0], [1.0, 4.0]])
+    b = np.array([[6.0], [5.0], [7.0], [10.0]])
+    expected = np.linalg.lstsq(a, b, rcond=None)[0]
+    np.testing.assert_allclose(linx.least_squares(a, b), expected, rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(linx.Matrix(a).least_squares(b).data, expected, rtol=1e-10, atol=1e-10)
+
+
 def test_condition_number():
     a = np.array([[4.0, 7.0], [2.0, 6.0]])
     assert linx.condition_number(a) > 1.0
@@ -105,6 +113,7 @@ if __name__ == "__main__":
     test_matmul()
     test_inverse()
     test_solve()
+    test_least_squares()
     test_condition_number()
     test_matrix_ops()
     test_matrix_factories()

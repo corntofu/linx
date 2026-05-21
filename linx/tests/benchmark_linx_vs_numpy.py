@@ -323,6 +323,10 @@ def numpy_least_squares(a, b):
     return np.linalg.lstsq(a, b, rcond=None)[0]
 
 
+def linx_least_squares(a, b):
+    return linx.least_squares(a, b)
+
+
 def linx_least_squares_normal_eq(a, b):
     a_t = linx.transpose(a)
     ata = linx.matmul(a_t, a)
@@ -348,12 +352,12 @@ def bench_least_squares(quick=False, include_4096_strassen=False):
     print("\n" + "=" * 72)
     print("  LEAST SQUARES (min ||Ax-b||)  —  linx vs NumPy")
     print("=" * 72)
-    print("  linx path: normal equations, solve((A.T @ A), (A.T @ b))")
+    print("  linx path: LAPACK dgels when available; normal equations fallback otherwise")
     if include_4096_strassen:
         print("  Strassen 4096x4096 path: Strassen for A.T @ A, regular matmul for A.T @ b")
 
     sizes = LEAST_SQUARES_SIZES_QUICK if quick else LEAST_SQUARES_SIZES_FULL
-    headers = ["Size (M×N)", "NumPy (lstsq)", "linx (normal eq)", "NumPy/linx"]
+    headers = ["Size (M×N)", "NumPy (lstsq)", "linx (least_squares)", "NumPy/linx"]
     rows = []
 
     for name, m, n in sizes:
@@ -362,7 +366,7 @@ def bench_least_squares(quick=False, include_4096_strassen=False):
         reps = 3 if m >= 1024 else 5
 
         t_np, _ = timed(numpy_least_squares, (a_np, b_np), reps=reps)
-        t_linx, _ = timed(linx_least_squares_normal_eq, (a_np, b_np), reps=reps)
+        t_linx, _ = timed(linx_least_squares, (a_np, b_np), reps=reps)
 
         ratio = t_np / t_linx if t_linx > 0 else float("inf")
         rows.append([name, fmt_time(t_np), fmt_time(t_linx), f"{ratio:.2f}x"])

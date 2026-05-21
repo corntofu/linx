@@ -568,6 +568,34 @@ PyObject* py_solve(PyObject*, PyObject* args) {
     }
 }
 
+PyObject* py_least_squares(PyObject*, PyObject* args, PyObject* kwargs) {
+    PyObject* a_object = nullptr;
+    PyObject* b_object = nullptr;
+    double eps = 1e-12;
+
+    static const char* kwlist[] = {"a", "b", "eps", nullptr};
+    if (!PyArg_ParseTupleAndKeywords(
+            args,
+            kwargs,
+            "OO|d:least_squares",
+            const_cast<char**>(kwlist),
+            &a_object,
+            &b_object,
+            &eps)) {
+        return nullptr;
+    }
+
+    try {
+        auto a = matrix_from_python(a_object, "a");
+        auto b = matrix_from_python(b_object, "b");
+        return run_matrix_kernel([&]() {
+            return la::least_squares(a, b, eps);
+        });
+    } catch (const std::exception& error) {
+        return exception_to_python(error);
+    }
+}
+
 PyObject* py_inverse(PyObject*, PyObject* args, PyObject* kwargs) {
     PyObject* matrix_object = nullptr;
     const char* method = "schur";
@@ -956,6 +984,7 @@ PyMethodDef methods[] = {
     {"transpose", py_transpose, METH_VARARGS, "Matrix transpose (vDSP)."},
     {"neg", py_neg, METH_VARARGS, "Unary negation (vDSP)."},
     {"solve", py_solve, METH_VARARGS, "Solve A @ X = B."},
+    {"least_squares", reinterpret_cast<PyCFunction>(py_least_squares), METH_VARARGS | METH_KEYWORDS, "Solve min ||A @ X - B||_2."},
     {"inverse", reinterpret_cast<PyCFunction>(py_inverse), METH_VARARGS | METH_KEYWORDS, "Invert a matrix."},
     {"inverse_schur", reinterpret_cast<PyCFunction>(py_inverse_schur), METH_VARARGS | METH_KEYWORDS, "Invert with Schur complement."},
     {"inverse_schur_strassen", reinterpret_cast<PyCFunction>(py_inverse_schur_strassen), METH_VARARGS | METH_KEYWORDS, "Invert with Schur complement and Strassen matmul."},

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <initializer_list>
 #include <iomanip>
 #include <iostream>
@@ -397,6 +398,14 @@ inline std::size_t available_threads() {
     return count == 0 ? 1 : static_cast<std::size_t>(count);
 }
 
+inline bool task_parallel_enabled(std::size_t block_size) {
+    const char* disabled = std::getenv("LINX_DISABLE_PROCESSOR_PARALLEL");
+    if (disabled != nullptr && disabled[0] != '\0' && disabled[0] != '0') {
+        return false;
+    }
+    return available_threads() > 1 && block_size >= 512;
+}
+
 template <typename Fn>
 void parallel_for_rows(std::size_t rows, std::size_t min_work, std::size_t work, Fn&& fn) {
     const std::size_t thread_count = std::min(rows, available_threads());
@@ -561,17 +570,17 @@ inline void vector_scale_d(double* dst, const double* a, double s, std::size_t n
 
 inline std::string hardware_backend() {
 #if LINX_HAS_BLAS && defined(__aarch64__) && defined(__APPLE__)
-    return "Apple Accelerate BLAS/LAPACK (arm64)";
+    return "Apple Accelerate BLAS/LAPACK + std::thread task parallel (arm64)";
 #elif LINX_HAS_BLAS
-    return "Apple Accelerate BLAS/LAPACK (Intel)";
+    return "Apple Accelerate BLAS/LAPACK + std::thread task parallel (Intel)";
 #elif defined(__AVX2__)
-    return "AVX2 SIMD + std::thread";
+    return "AVX2 SIMD + std::thread row/task parallel";
 #elif defined(__AVX__)
-    return "AVX SIMD + std::thread";
+    return "AVX SIMD + std::thread row/task parallel";
 #elif defined(__aarch64__) || defined(__ARM_NEON)
-    return "ARM NEON SIMD + std::thread";
+    return "ARM NEON SIMD + std::thread row/task parallel";
 #else
-    return "scalar kernel + std::thread";
+    return "scalar kernel + std::thread row/task parallel";
 #endif
 }
 
@@ -1070,24 +1079,103 @@ Matrix<T> solve(Matrix<T> a, Matrix<T> b, T eps = static_cast<T>(1e-12)) {
             b(col, c) /= diag;
         }
 
-        for (std::size_t r = 0; r < n; ++r) {
-            if (r == col) {
-                continue;
+        auto& a_data = a.data();
+        auto& b_data = b.data();
+        const T* pivot_a = a_data.data() + col * n;
+        const T* pivot_b = b_data.data() + col * m;
+        auto eliminate_rows = [&](std::size_t row_begin, std::size_t row_end) {
+            for (std::size_t r = row_begin; r < row_end; ++r) {
+                if (r == col) {
+                    continue;
+                }
+                T* row_a = a_data.data() + r * n;
+                T* row_b = b_data.data() + r * m;
+                const T factor = row_a[col];
+                if (std::abs(factor) <= eps) {
+                    continue;
+                }
+                for (std::size_t c = 0; c < n; ++c) {
+                    row_a[c] -= factor * pivot_a[c];
+                }
+                for (std::size_t c = 0; c < m; ++c) {
+                    row_b[c] -= factor * pivot_b[c];
+                }
             }
-            const T factor = a(r, col);
-            if (std::abs(factor) <= eps) {
-                continue;
-            }
-            for (std::size_t c = 0; c < n; ++c) {
-                a(r, c) -= factor * a(col, c);
-            }
-            for (std::size_t c = 0; c < m; ++c) {
-                b(r, c) -= factor * b(col, c);
-            }
-        }
+        };
+        detail::parallel_for_rows(n, 128 * 128, n * (n + m), eliminate_rows);
     }
 
     return b;
+}
+
+template <typename T>
+Matrix<T> least_squares(const Matrix<T>& a, const Matrix<T>& b, T eps = static_cast<T>(1e-12)) {
+    if (a.rows() != b.rows()) {
+        throw ShapeError("least_squares requires a.rows == b.rows");
+    }
+    if (a.rows() < a.cols()) {
+        throw ShapeError("least_squares currently supports overdetermined systems with rows >= cols");
+    }
+
+    const std::size_t m = a.rows();
+    const std::size_t n = a.cols();
+    const std::size_t nrhs = b.cols();
+
+#if LINX_HAS_BLAS
+    if constexpr (std::is_same<T, double>::value) {
+        Matrix<double> a_col = a.transpose();
+
+        int m_int = static_cast<int>(m);
+        int n_int = static_cast<int>(n);
+        int nrhs_int = static_cast<int>(nrhs);
+        int lda = static_cast<int>(m);
+        int ldb = static_cast<int>(std::max(m, n));
+        int info = 0;
+        char trans = 'N';
+
+        std::vector<double> b_col(static_cast<std::size_t>(ldb) * nrhs, 0.0);
+        for (std::size_t r = 0; r < m; ++r) {
+            for (std::size_t c = 0; c < nrhs; ++c) {
+                b_col[r + c * static_cast<std::size_t>(ldb)] = b(r, c);
+            }
+        }
+
+        int lwork = -1;
+        double work_query = 0.0;
+        dgels_(&trans, &m_int, &n_int, &nrhs_int,
+               a_col.data().data(), &lda,
+               b_col.data(), &ldb,
+               &work_query, &lwork, &info);
+        if (info != 0) {
+            throw LinAlgError("dgels workspace query failed");
+        }
+
+        lwork = std::max(1, static_cast<int>(work_query));
+        std::vector<double> work(static_cast<std::size_t>(lwork));
+
+        dgels_(&trans, &m_int, &n_int, &nrhs_int,
+               a_col.data().data(), &lda,
+               b_col.data(), &ldb,
+               work.data(), &lwork, &info);
+        if (info < 0) {
+            throw LinAlgError("dgels: illegal argument");
+        }
+        if (info > 0) {
+            throw LinAlgError("dgels: matrix is rank deficient");
+        }
+
+        Matrix<double> x(n, nrhs);
+        for (std::size_t r = 0; r < n; ++r) {
+            for (std::size_t c = 0; c < nrhs; ++c) {
+                x(r, c) = b_col[r + c * static_cast<std::size_t>(ldb)];
+            }
+        }
+        return x;
+    }
+#endif
+
+    const auto a_t = a.transpose();
+    return solve(matmul(a_t, a), matmul(a_t, b), eps);
 }
 
 template <typename T>
@@ -1133,14 +1221,39 @@ Matrix<T> inverse_schur(const Matrix<T>& matrix, std::size_t min_block = 32, T e
     const auto d = matrix.block(h, h, h, h);
 
     const auto a_inv = inverse_schur(a, min_block, eps);
-    const auto ca_inv = matmul(c, a_inv);
+
+    Matrix<T> ca_inv;
+    Matrix<T> a_inv_b;
+    if (detail::task_parallel_enabled(h)) {
+        auto ca_task = std::async(std::launch::async, [&]() {
+            return matmul(c, a_inv);
+        });
+        a_inv_b = matmul(a_inv, b);
+        ca_inv = ca_task.get();
+    } else {
+        ca_inv = matmul(c, a_inv);
+        a_inv_b = matmul(a_inv, b);
+    }
+
     const auto schur = d - matmul(ca_inv, b);
     const auto s_inv = inverse_schur(schur, min_block, eps);
 
-    const auto a_inv_b = matmul(a_inv, b);
-    const auto top_left = a_inv + matmul(matmul(a_inv_b, s_inv), ca_inv);
-    const auto top_right = -matmul(a_inv_b, s_inv);
-    const auto bottom_left = -matmul(s_inv, ca_inv);
+    Matrix<T> a_inv_b_s_inv;
+    Matrix<T> s_inv_ca_inv;
+    if (detail::task_parallel_enabled(h)) {
+        auto right_task = std::async(std::launch::async, [&]() {
+            return matmul(a_inv_b, s_inv);
+        });
+        s_inv_ca_inv = matmul(s_inv, ca_inv);
+        a_inv_b_s_inv = right_task.get();
+    } else {
+        a_inv_b_s_inv = matmul(a_inv_b, s_inv);
+        s_inv_ca_inv = matmul(s_inv, ca_inv);
+    }
+
+    const auto top_left = a_inv + matmul(a_inv_b_s_inv, ca_inv);
+    const auto top_right = -a_inv_b_s_inv;
+    const auto bottom_left = -s_inv_ca_inv;
 
     Matrix<T> out(n, n);
     out.set_block(0, 0, top_left);
@@ -1182,15 +1295,39 @@ Matrix<T> inverse_schur_strassen(const Matrix<T>& matrix,
     const auto d = matrix.block(h, h, h, h);
 
     const auto a_inv = inverse_schur_strassen(a, block, strassen_threshold, eps);
-    const auto ca_inv = multiply(c, a_inv);
+
+    Matrix<T> ca_inv;
+    Matrix<T> a_inv_b;
+    if (detail::task_parallel_enabled(h)) {
+        auto ca_task = std::async(std::launch::async, [&]() {
+            return multiply(c, a_inv);
+        });
+        a_inv_b = multiply(a_inv, b);
+        ca_inv = ca_task.get();
+    } else {
+        ca_inv = multiply(c, a_inv);
+        a_inv_b = multiply(a_inv, b);
+    }
+
     const auto schur = d - multiply(ca_inv, b);
     const auto s_inv = inverse_schur_strassen(schur, block, strassen_threshold, eps);
 
-    const auto a_inv_b = multiply(a_inv, b);
-    const auto a_inv_b_s_inv = multiply(a_inv_b, s_inv);
+    Matrix<T> a_inv_b_s_inv;
+    Matrix<T> s_inv_ca_inv;
+    if (detail::task_parallel_enabled(h)) {
+        auto right_task = std::async(std::launch::async, [&]() {
+            return multiply(a_inv_b, s_inv);
+        });
+        s_inv_ca_inv = multiply(s_inv, ca_inv);
+        a_inv_b_s_inv = right_task.get();
+    } else {
+        a_inv_b_s_inv = multiply(a_inv_b, s_inv);
+        s_inv_ca_inv = multiply(s_inv, ca_inv);
+    }
+
     const auto top_left = a_inv + multiply(a_inv_b_s_inv, ca_inv);
     const auto top_right = -a_inv_b_s_inv;
-    const auto bottom_left = -multiply(s_inv, ca_inv);
+    const auto bottom_left = -s_inv_ca_inv;
 
     Matrix<T> out(n, n);
     out.set_block(0, 0, top_left);

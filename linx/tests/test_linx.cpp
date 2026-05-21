@@ -47,6 +47,10 @@ void test_inverse_schur() {
     assert(product.allclose(la::Matrix<double>::eye(4), 1e-8, 1e-8));
     assert(la::residual_norm(a, inv) < 1e-10);
     assert(la::condition_number_estimate(a) > 1.0);
+
+    auto inv_strassen = la::inverse_schur_strassen(a, 2, 2);
+    assert(la::matmul(a, inv_strassen).allclose(la::Matrix<double>::eye(4), 1e-8, 1e-8));
+    assert(!la::hardware_backend().empty());
 }
 
 void test_solve() {
@@ -54,6 +58,18 @@ void test_solve() {
     la::Matrix<double> b{{5.0}, {5.0}};
     auto x = la::solve(a, b);
     assert(x.allclose({{0.0}, {2.5}}));
+}
+
+void test_least_squares() {
+    la::Matrix<double> a{
+        {1.0, 1.0},
+        {1.0, 2.0},
+        {1.0, 3.0},
+        {1.0, 4.0}
+    };
+    la::Matrix<double> b{{6.0}, {5.0}, {7.0}, {10.0}};
+    auto x = la::least_squares(a, b);
+    assert(x.allclose({{3.5}, {1.4}}, 1e-8, 1e-8));
 }
 
 void test_inverse_regularized() {
@@ -72,6 +88,7 @@ int main() {
     test_inverse_lu();
     test_inverse_schur();
     test_solve();
+    test_least_squares();
     test_inverse_regularized();
 
     std::cout << "all linx tests passed\n";
