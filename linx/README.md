@@ -1,7 +1,7 @@
 # linx — C++17 선형대수 라이브러리 (NumPy 스타일)
 
 `linx`는 졸업과제 PDF의 요구사항을 바탕으로 만든 작은 C++17 선형대수 라이브러리입니다.  
-NumPy처럼 읽기 쉬운 행렬 생성/연산 API를 제공하고, Apple Accelerate BLAS/LAPACK 가속, Schur Complement 역행렬, Strassen 행렬곱, Python 바인딩을 포함합니다.
+NumPy처럼 읽기 쉬운 행렬 생성/연산 API를 제공하고, Apple Accelerate BLAS/LAPACK 가속, Windows Intel CPU 자동 감지 SIMD 경로, Schur Complement 역행렬, Strassen 행렬곱, Python 바인딩을 포함합니다.
 
 ---
 
@@ -58,15 +58,30 @@ NumPy처럼 읽기 쉬운 행렬 생성/연산 API를 제공하고, Apple Accele
 | `frobenius_norm(matrix)` | Frobenius 노름 — Accelerate `vDSP_svesqD` 또는 직접 계산 |
 | `condition_number_estimate(matrix)` | 조건수 추정 `‖A‖_F · ‖A⁻¹‖_F` |
 | `residual_norm(matrix, inverse)` | `‖A·A⁻¹ - I‖_F` |
-| `hardware_backend()` | 컴파일된 백엔드 문자열 반환 |
+| `hardware_backend()` | 런타임에 선택된 백엔드 문자열 반환 |
+| `cpu_optimization_summary()` | 런타임 CPU 감지 결과와 선택된 SIMD/threshold 요약 반환 |
 
 ### 하드웨어 가속 경로
 
 - **Apple Accelerate (macOS):** `vDSP`(요소별 연산), `cblas_dgemm`(행렬곱), `dgetrf_`/`dgetri_`/`dgesv_`(LU, 역행렬, solve)
-- **x86_64:** AVX2/AVX 내적 커널 (`<immintrin.h>`)
+- **Windows Intel x86/x64:** CPUID/XGETBV로 `GenuineIntel`, `SSE2`, `AVX`, `AVX2`, `FMA`, OS AVX 상태를 자동 감지한 뒤 요소별 연산, dot/matmul fallback, Strassen threshold를 선택
+- **x86_64:** AVX2/FMA, AVX, SSE2 내적/요소별 커널 (`<immintrin.h>`)
 - **ARM64:** NEON 내적 커널 (`<arm_neon.h>`)
 - **프로세서 병렬화:** `std::thread` 기반 row-chunk 병렬 처리 (`parallel_for_rows`)와 Schur complement의 독립 블록 곱 task 병렬화
 - **GPU:** 현재 코어는 CPU/SIMD/BLAS 중심이며, CUDA/Metal/OpenCL 백엔드는 아직 별도 구현 대상
+
+런타임에 선택된 최적화는 아래 함수로 확인할 수 있습니다.
+
+```cpp
+std::cout << la::hardware_backend() << "\n";
+std::cout << la::cpu_optimization_summary() << "\n";
+```
+
+```python
+import linx
+print(linx.hardware_backend())
+print(linx.cpu_optimization_summary())
+```
 
 ---
 
@@ -94,7 +109,7 @@ Python C API와 NumPy C API로 구현. 모든 함수는 GIL을 해제(`Py_BEGIN_
 
 ### 노출된 C 함수
 
-`matmul`, `matmul_strassen`, `solve`, `least_squares`, `inverse`, `inverse_schur`, `frobenius_norm`, `residual_norm`, `condition_number`, `add`, `subtract`, `hadamard`, `scalar_mul`, `transpose`, `neg`, `hardware_backend`, `trace`, `det`
+`matmul`, `matmul_strassen`, `solve`, `least_squares`, `inverse`, `inverse_schur`, `frobenius_norm`, `residual_norm`, `condition_number`, `add`, `subtract`, `hadamard`, `scalar_mul`, `transpose`, `neg`, `hardware_backend`, `cpu_optimization_summary`, `trace`, `det`
 
 ---
 
@@ -154,6 +169,22 @@ ctest --test-dir build --output-on-failure
 ./build/linx_demo
 ```
 
+Windows + MSVC에서 Intel CPU 자동 감지 경로를 빌드하려면:
+
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022"
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+.\build\Release\linx_demo.exe
+```
+
+기본 MSVC 빌드는 SSE2까지 안전하게 사용합니다. AVX2 명령어 생성을 명시적으로 켜고 Intel AVX2/FMA CPU에서만 실행할 바이너리를 만들려면:
+
+```powershell
+cmake -S . -B build-avx2 -G "Visual Studio 17 2022" -DLINX_WINDOWS_INTEL_AVX2=ON
+cmake --build build-avx2 --config Release
+```
+
 ### C++ (직접 컴파일)
 
 ```bash
@@ -163,11 +194,33 @@ clang++ -std=c++17 -Iinclude examples/demo.cpp -o /tmp/linx_demo
 /tmp/linx_demo
 ```
 
+macOS에서 직접 컴파일할 때는 Accelerate를 링크합니다.
+
+```bash
+clang++ -std=c++17 -Iinclude tests/test_linx.cpp -framework Accelerate -o /tmp/linx_tests
+clang++ -std=c++17 -Iinclude examples/demo.cpp -framework Accelerate -o /tmp/linx_demo
+```
+
 ### Python
 
 ```bash
 python3 setup.py build_ext --inplace
 PYTHONPATH=python python3 tests/test_python_linx.py
+```
+
+Windows Python/MSVC 빌드:
+
+```powershell
+py setup.py build_ext --inplace
+$env:PYTHONPATH="python"
+py tests/test_python_linx.py
+```
+
+MSVC에서 AVX2 바이너리를 명시적으로 만들 경우:
+
+```powershell
+$env:LINX_WINDOWS_INTEL_AVX2="1"
+py setup.py build_ext --inplace
 ```
 
 최소제곱법만 NumPy와 비교:

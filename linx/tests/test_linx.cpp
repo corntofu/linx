@@ -51,6 +51,9 @@ void test_inverse_schur() {
     auto inv_strassen = la::inverse_schur_strassen(a, 2, 2);
     assert(la::matmul(a, inv_strassen).allclose(la::Matrix<double>::eye(4), 1e-8, 1e-8));
     assert(!la::hardware_backend().empty());
+    assert(!la::cpu_optimization_summary().empty());
+    assert(la::auto_strassen_min() >= 1);
+    assert(la::auto_strassen_base() >= 1);
 }
 
 void test_solve() {

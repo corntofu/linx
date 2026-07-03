@@ -7,6 +7,7 @@ import numpy as np
 from . import _linx as _backend
 
 condition_number = _backend.condition_number
+cpu_optimization_summary = _backend.cpu_optimization_summary
 det = _backend.det
 frobenius_norm = _backend.frobenius_norm
 hardware_backend = _backend.hardware_backend
@@ -21,7 +22,10 @@ trace = _backend.trace
 
 _cpp_matmul = _backend.matmul
 _BACKEND_NAME = hardware_backend()
-_HAS_FAST_CPP_MATMUL = "BLAS" in _BACKEND_NAME or "Accelerate" in _BACKEND_NAME
+_HAS_FAST_CPP_MATMUL = any(
+    token in _BACKEND_NAME
+    for token in ("BLAS", "Accelerate", "Windows Intel CPU autodetect", "AVX", "SSE2")
+)
 _STRASSEN_MIN_N = 4096
 
 
@@ -64,9 +68,9 @@ def neg(matrix):
 def matmul(lhs, rhs):
     """Multiply two matrices.
 
-    The C++ extension uses BLAS when it is available. If the extension was
-    built without BLAS, use NumPy's BLAS-backed matmul instead of the much
-    slower portable C++ fallback exposed by the extension.
+    The C++ extension uses BLAS when available and can use the runtime-selected
+    Windows Intel SIMD fallback. Otherwise, NumPy's BLAS-backed matmul remains
+    the default path for ordinary matrix sizes.
     """
     lhs_arr = _as_array(lhs)
     rhs_arr = _as_array(rhs)
@@ -86,6 +90,7 @@ __all__ = [
     "array",
     "arange",
     "condition_number",
+    "cpu_optimization_summary",
     "det",
     "eye",
     "frobenius_norm",

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <future>
@@ -20,10 +22,61 @@
 #include <utility>
 #include <vector>
 
-#if defined(__AVX2__) || defined(__AVX__)
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+#define LINX_X86_SIMD 1
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 #include <immintrin.h>
-#elif defined(__aarch64__) || defined(__ARM_NEON)
+#if defined(__GNUC__) || defined(__clang__)
+#include <cpuid.h>
+#endif
+#else
+#define LINX_X86_SIMD 0
+#endif
+
+#if defined(__aarch64__) || defined(__ARM_NEON)
 #include <arm_neon.h>
+#endif
+
+#if LINX_X86_SIMD && (defined(_M_X64) || defined(__x86_64__) || defined(__SSE2__) || \
+                      (defined(_M_IX86_FP) && _M_IX86_FP >= 2))
+#define LINX_COMPILED_SSE2 1
+#else
+#define LINX_COMPILED_SSE2 0
+#endif
+
+#if LINX_X86_SIMD && (defined(__AVX__) || defined(_M_AVX) || \
+                      (!defined(_MSC_VER) && (defined(__GNUC__) || defined(__clang__))))
+#define LINX_COMPILED_AVX 1
+#else
+#define LINX_COMPILED_AVX 0
+#endif
+
+#if LINX_X86_SIMD && (defined(__AVX2__) || \
+                      (!defined(_MSC_VER) && (defined(__GNUC__) || defined(__clang__))))
+#define LINX_COMPILED_AVX2 1
+#else
+#define LINX_COMPILED_AVX2 0
+#endif
+
+#if LINX_X86_SIMD && (defined(__FMA__) || defined(__AVX2__) || \
+                      (!defined(_MSC_VER) && (defined(__GNUC__) || defined(__clang__))))
+#define LINX_COMPILED_FMA 1
+#else
+#define LINX_COMPILED_FMA 0
+#endif
+
+#if LINX_X86_SIMD && (defined(__GNUC__) || defined(__clang__)) && !defined(_MSC_VER)
+#define LINX_TARGET_SSE2 __attribute__((target("sse2")))
+#define LINX_TARGET_AVX __attribute__((target("avx")))
+#define LINX_TARGET_AVX2 __attribute__((target("avx2")))
+#define LINX_TARGET_AVX2_FMA __attribute__((target("avx2,fma")))
+#else
+#define LINX_TARGET_SSE2
+#define LINX_TARGET_AVX
+#define LINX_TARGET_AVX2
+#define LINX_TARGET_AVX2_FMA
 #endif
 
 // ── Apple Accelerate BLAS/LAPACK 통합 ───────────────────────────────────────
@@ -63,6 +116,17 @@
 #endif
 
 namespace la {
+
+namespace detail {
+inline double dot_contiguous(const double* lhs, const double* rhs, std::size_t n);
+inline void vector_add_d(double* dst, const double* a, const double* b, std::size_t n);
+inline void vector_sub_d(double* dst, const double* a, const double* b, std::size_t n);
+inline void vector_mul_d(double* dst, const double* a, const double* b, std::size_t n);
+inline void vector_neg_d(double* dst, const double* a, std::size_t n);
+inline void vector_scale_d(double* dst, const double* a, double s, std::size_t n);
+inline std::size_t runtime_strassen_min();
+inline std::size_t runtime_strassen_base();
+} // namespace detail
 
 class LinAlgError : public std::runtime_error {
 public:
@@ -250,7 +314,7 @@ public:
                        out.data_.data(), 1, data_.size());
             return out;
         }
-#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)
+#else
         if constexpr (std::is_same<T, double>::value) {
             detail::vector_add_d(out.data_.data(), data_.data(), rhs.data_.data(), data_.size());
             return out;
@@ -271,7 +335,7 @@ public:
                        out.data_.data(), 1, data_.size());
             return out;
         }
-#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)
+#else
         if constexpr (std::is_same<T, double>::value) {
             detail::vector_sub_d(out.data_.data(), data_.data(), rhs.data_.data(), data_.size());
             return out;
@@ -290,7 +354,7 @@ public:
             vDSP_vnegD(data_.data(), 1, out.data_.data(), 1, data_.size());
             return out;
         }
-#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)
+#else
         if constexpr (std::is_same<T, double>::value) {
             detail::vector_neg_d(out.data_.data(), data_.data(), data_.size());
             return out;
@@ -311,7 +375,7 @@ public:
                         out.data_.data(), 1, data_.size());
             return out;
         }
-#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)
+#else
         if constexpr (std::is_same<T, double>::value) {
             detail::vector_scale_d(out.data_.data(), data_.data(), static_cast<double>(scalar), data_.size());
             return out;
@@ -339,7 +403,7 @@ public:
                        out.data_.data(), 1, data_.size());
             return out;
         }
-#elif defined(__AVX2__) || defined(__AVX__) || defined(__aarch64__) || defined(__ARM_NEON)
+#else
         if constexpr (std::is_same<T, double>::value) {
             detail::vector_mul_d(out.data_.data(), data_.data(), rhs.data_.data(), data_.size());
             return out;
@@ -398,17 +462,215 @@ inline std::size_t available_threads() {
     return count == 0 ? 1 : static_cast<std::size_t>(count);
 }
 
+enum class SimdKernel {
+    Scalar,
+    SSE2,
+    AVX,
+    AVX2,
+    AVX2FMA,
+};
+
+struct CpuFeatures {
+    bool is_x86 = false;
+    bool is_windows = false;
+    bool is_intel = false;
+    bool windows_intel_profile = false;
+    bool sse2 = false;
+    bool avx = false;
+    bool avx2 = false;
+    bool fma = false;
+    bool os_avx = false;
+    std::size_t l1d_bytes = 0;
+    std::size_t preferred_threads = 1;
+    SimdKernel selected_kernel = SimdKernel::Scalar;
+    std::string vendor = "unknown";
+};
+
+inline bool kernel_uses_avx(SimdKernel kernel) {
+    return kernel == SimdKernel::AVX ||
+           kernel == SimdKernel::AVX2 ||
+           kernel == SimdKernel::AVX2FMA;
+}
+
+inline bool kernel_uses_avx2(SimdKernel kernel) {
+    return kernel == SimdKernel::AVX2 || kernel == SimdKernel::AVX2FMA;
+}
+
+inline const char* simd_kernel_name(SimdKernel kernel) {
+    switch (kernel) {
+        case SimdKernel::AVX2FMA: return "AVX2/FMA";
+        case SimdKernel::AVX2: return "AVX2";
+        case SimdKernel::AVX: return "AVX";
+        case SimdKernel::SSE2: return "SSE2";
+        case SimdKernel::Scalar:
+        default:
+            return "scalar";
+    }
+}
+
+#if LINX_X86_SIMD
+inline std::uint32_t reg_u32(const std::array<int, 4>& regs, std::size_t index) {
+    return static_cast<std::uint32_t>(regs[index]);
+}
+
+inline std::array<int, 4> cpuid_regs(int leaf, int subleaf = 0) {
+    std::array<int, 4> regs{0, 0, 0, 0};
+#if defined(_MSC_VER)
+    __cpuidex(regs.data(), leaf, subleaf);
+#elif defined(__GNUC__) || defined(__clang__)
+    unsigned int eax = 0;
+    unsigned int ebx = 0;
+    unsigned int ecx = 0;
+    unsigned int edx = 0;
+    __cpuid_count(static_cast<unsigned int>(leaf),
+                  static_cast<unsigned int>(subleaf),
+                  eax, ebx, ecx, edx);
+    regs = {
+        static_cast<int>(eax),
+        static_cast<int>(ebx),
+        static_cast<int>(ecx),
+        static_cast<int>(edx),
+    };
+#else
+    (void)leaf;
+    (void)subleaf;
+#endif
+    return regs;
+}
+
+inline std::uint64_t xgetbv_u64(unsigned int index) {
+#if defined(_MSC_VER)
+    return static_cast<std::uint64_t>(_xgetbv(index));
+#elif defined(__GNUC__) || defined(__clang__)
+    std::uint32_t eax = 0;
+    std::uint32_t edx = 0;
+    __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(index));
+    return (static_cast<std::uint64_t>(edx) << 32) | eax;
+#else
+    (void)index;
+    return 0;
+#endif
+}
+
+inline std::size_t detect_l1d_cache_bytes(std::uint32_t max_leaf) {
+    if (max_leaf < 4) {
+        return 0;
+    }
+    for (int subleaf = 0; subleaf < 8; ++subleaf) {
+        const auto regs = cpuid_regs(4, subleaf);
+        const std::uint32_t eax = reg_u32(regs, 0);
+        const std::uint32_t ebx = reg_u32(regs, 1);
+        const std::uint32_t ecx = reg_u32(regs, 2);
+        const std::uint32_t cache_type = eax & 0x1fu;
+        if (cache_type == 0) {
+            break;
+        }
+        const std::uint32_t cache_level = (eax >> 5) & 0x7u;
+        if (cache_type == 1 && cache_level == 1) {
+            const std::size_t line_size = (ebx & 0xfffu) + 1u;
+            const std::size_t partitions = ((ebx >> 12) & 0x3ffu) + 1u;
+            const std::size_t ways = ((ebx >> 22) & 0x3ffu) + 1u;
+            const std::size_t sets = ecx + 1u;
+            return line_size * partitions * ways * sets;
+        }
+    }
+    return 0;
+}
+#endif
+
+inline CpuFeatures detect_cpu_features() {
+    CpuFeatures features;
+    features.preferred_threads = available_threads();
+#if LINX_X86_SIMD
+    features.is_x86 = true;
+#if defined(_WIN32)
+    features.is_windows = true;
+#endif
+
+    const auto leaf0 = cpuid_regs(0);
+    const std::uint32_t max_leaf = reg_u32(leaf0, 0);
+    char vendor[13] = {};
+    std::memcpy(vendor + 0, &leaf0[1], 4);
+    std::memcpy(vendor + 4, &leaf0[3], 4);
+    std::memcpy(vendor + 8, &leaf0[2], 4);
+    features.vendor = vendor;
+    features.is_intel = features.vendor == "GenuineIntel";
+    features.windows_intel_profile = features.is_windows && features.is_intel;
+    features.l1d_bytes = detect_l1d_cache_bytes(max_leaf);
+
+    bool cpu_avx = false;
+    bool cpu_fma = false;
+    bool cpu_avx2 = false;
+    if (max_leaf >= 1) {
+        const auto leaf1 = cpuid_regs(1);
+        const std::uint32_t ecx = reg_u32(leaf1, 2);
+        const std::uint32_t edx = reg_u32(leaf1, 3);
+        features.sse2 = (edx & (1u << 26)) != 0;
+        cpu_fma = (ecx & (1u << 12)) != 0;
+        const bool osxsave = (ecx & (1u << 27)) != 0;
+        cpu_avx = (ecx & (1u << 28)) != 0;
+        if (osxsave) {
+            const std::uint64_t xcr0 = xgetbv_u64(0);
+            features.os_avx = (xcr0 & 0x6u) == 0x6u;
+        }
+    }
+    if (max_leaf >= 7) {
+        const auto leaf7 = cpuid_regs(7, 0);
+        cpu_avx2 = (reg_u32(leaf7, 1) & (1u << 5)) != 0;
+    }
+
+    const bool allow_runtime_simd = !features.is_windows || features.is_intel;
+    features.avx = allow_runtime_simd && cpu_avx && features.os_avx;
+    features.avx2 = features.avx && cpu_avx2;
+    features.fma = features.avx && cpu_fma;
+    if (!allow_runtime_simd) {
+        features.sse2 = false;
+    }
+
+#if LINX_COMPILED_SSE2
+    if (features.sse2) {
+        features.selected_kernel = SimdKernel::SSE2;
+    }
+#endif
+#if LINX_COMPILED_AVX
+    if (features.avx) {
+        features.selected_kernel = SimdKernel::AVX;
+    }
+#endif
+#if LINX_COMPILED_AVX2
+    if (features.avx2) {
+        features.selected_kernel = SimdKernel::AVX2;
+    }
+#endif
+#if LINX_COMPILED_FMA
+    if (features.avx2 && features.fma) {
+        features.selected_kernel = SimdKernel::AVX2FMA;
+    }
+#endif
+#endif
+    return features;
+}
+
+inline const CpuFeatures& runtime_cpu_features() {
+    static const CpuFeatures features = detect_cpu_features();
+    return features;
+}
+
+inline std::size_t preferred_threads() {
+    return std::max<std::size_t>(1, runtime_cpu_features().preferred_threads);
+}
+
 inline bool task_parallel_enabled(std::size_t block_size) {
     const char* disabled = std::getenv("LINX_DISABLE_PROCESSOR_PARALLEL");
     if (disabled != nullptr && disabled[0] != '\0' && disabled[0] != '0') {
         return false;
     }
-    return available_threads() > 1 && block_size >= 512;
+    return preferred_threads() > 1 && block_size >= 512;
 }
 
 template <typename Fn>
 void parallel_for_rows(std::size_t rows, std::size_t min_work, std::size_t work, Fn&& fn) {
-    const std::size_t thread_count = std::min(rows, available_threads());
+    const std::size_t thread_count = std::min(rows, preferred_threads());
     if (rows == 0 || thread_count <= 1 || work < min_work) {
         fn(0, rows);
         return;
@@ -433,6 +695,112 @@ void parallel_for_rows(std::size_t rows, std::size_t min_work, std::size_t work,
     }
 }
 
+inline std::size_t runtime_strassen_base() {
+#if LINX_X86_SIMD
+    const auto& features = runtime_cpu_features();
+    if (features.windows_intel_profile && kernel_uses_avx2(features.selected_kernel)) {
+        return 2048;
+    }
+    if (features.windows_intel_profile && kernel_uses_avx(features.selected_kernel)) {
+        return 3072;
+    }
+#endif
+    return static_cast<std::size_t>(LINX_M2_STRASSEN_BASE);
+}
+
+inline std::size_t runtime_strassen_min() {
+#if LINX_X86_SIMD
+    const auto& features = runtime_cpu_features();
+    if (features.windows_intel_profile && kernel_uses_avx2(features.selected_kernel)) {
+        return 3072;
+    }
+#endif
+    return static_cast<std::size_t>(LINX_M2_STRASSEN_MIN);
+}
+
+inline std::string compiled_simd_description() {
+#if LINX_COMPILED_FMA
+    return "AVX2/FMA target + AVX2 + AVX + SSE2";
+#elif LINX_COMPILED_AVX2
+    return "AVX2 target + AVX + SSE2";
+#elif LINX_COMPILED_AVX
+    return "AVX target + SSE2";
+#elif LINX_COMPILED_SSE2
+    return "SSE2";
+#else
+    return "scalar";
+#endif
+}
+
+inline std::string runtime_backend_description() {
+#if LINX_X86_SIMD
+    const auto& features = runtime_cpu_features();
+    std::string out;
+    if (features.is_windows) {
+        out = features.is_intel
+            ? "Windows Intel CPU autodetect"
+            : "Windows x86 CPU autodetect (non-Intel scalar fallback)";
+    } else {
+        out = "x86 CPU autodetect";
+    }
+    out += ": ";
+    out += simd_kernel_name(features.selected_kernel);
+    out += " SIMD + std::thread row/task parallel";
+    out += " [compiled ";
+    out += compiled_simd_description();
+    out += "]";
+    return out;
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+    return "ARM NEON SIMD + std::thread row/task parallel";
+#else
+    return "scalar kernel + std::thread row/task parallel";
+#endif
+}
+
+inline std::string cpu_optimization_description() {
+#if LINX_X86_SIMD
+    const auto& features = runtime_cpu_features();
+    std::string out = "vendor=" + features.vendor;
+    out += ", selected=";
+    out += simd_kernel_name(features.selected_kernel);
+    out += ", compiled=" + compiled_simd_description();
+    out += ", features=";
+    bool wrote = false;
+    auto append = [&](const char* name, bool enabled) {
+        if (!enabled) {
+            return;
+        }
+        if (wrote) {
+            out += "/";
+        }
+        out += name;
+        wrote = true;
+    };
+    append("SSE2", features.sse2);
+    append("AVX", features.avx);
+    append("AVX2", features.avx2);
+    append("FMA", features.fma);
+    if (!wrote) {
+        out += "scalar";
+    }
+    out += ", os_avx=";
+    out += features.os_avx ? "yes" : "no";
+    out += ", windows_intel_profile=";
+    out += features.windows_intel_profile ? "enabled" : "disabled";
+    out += ", threads=" + std::to_string(features.preferred_threads);
+    if (features.l1d_bytes > 0) {
+        out += ", l1d_bytes=" + std::to_string(features.l1d_bytes);
+    }
+    out += ", strassen_min=" + std::to_string(runtime_strassen_min());
+    out += ", strassen_base=" + std::to_string(runtime_strassen_base());
+    return out;
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+    return "selected=ARM NEON, threads=" + std::to_string(available_threads());
+#else
+    return "selected=scalar, threads=" + std::to_string(available_threads());
+#endif
+}
+
 template <typename T>
 T dot_contiguous(const T* lhs, const T* rhs, std::size_t n) {
     T sum = T{};
@@ -442,11 +810,36 @@ T dot_contiguous(const T* lhs, const T* rhs, std::size_t n) {
     return sum;
 }
 
-inline double dot_contiguous(const double* lhs, const double* rhs, std::size_t n) {
-    std::size_t i = 0;
+inline double dot_scalar_d(const double* lhs, const double* rhs, std::size_t n) {
     double sum = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        sum += lhs[i] * rhs[i];
+    }
+    return sum;
+}
 
-#if defined(__AVX2__) || defined(__AVX__)
+#if LINX_COMPILED_SSE2
+LINX_TARGET_SSE2 inline double dot_sse2_d(const double* lhs, const double* rhs, std::size_t n) {
+    std::size_t i = 0;
+    __m128d acc = _mm_setzero_pd();
+    for (; i + 2 <= n; i += 2) {
+        const __m128d a = _mm_loadu_pd(lhs + i);
+        const __m128d b = _mm_loadu_pd(rhs + i);
+        acc = _mm_add_pd(acc, _mm_mul_pd(a, b));
+    }
+    alignas(16) double lanes[2];
+    _mm_store_pd(lanes, acc);
+    double sum = lanes[0] + lanes[1];
+    for (; i < n; ++i) {
+        sum += lhs[i] * rhs[i];
+    }
+    return sum;
+}
+#endif
+
+#if LINX_COMPILED_AVX
+LINX_TARGET_AVX inline double dot_avx_d(const double* lhs, const double* rhs, std::size_t n) {
+    std::size_t i = 0;
     __m256d acc = _mm256_setzero_pd();
     for (; i + 4 <= n; i += 4) {
         const __m256d a = _mm256_loadu_pd(lhs + i);
@@ -455,116 +848,358 @@ inline double dot_contiguous(const double* lhs, const double* rhs, std::size_t n
     }
     alignas(32) double lanes[4];
     _mm256_store_pd(lanes, acc);
-    sum = lanes[0] + lanes[1] + lanes[2] + lanes[3];
-#elif defined(__aarch64__) || defined(__ARM_NEON)
+    double sum = lanes[0] + lanes[1] + lanes[2] + lanes[3];
+    for (; i < n; ++i) {
+        sum += lhs[i] * rhs[i];
+    }
+    return sum;
+}
+#endif
+
+#if LINX_COMPILED_FMA
+LINX_TARGET_AVX2_FMA inline double dot_avx2_fma_d(const double* lhs, const double* rhs, std::size_t n) {
+    std::size_t i = 0;
+    __m256d acc = _mm256_setzero_pd();
+    for (; i + 4 <= n; i += 4) {
+        const __m256d a = _mm256_loadu_pd(lhs + i);
+        const __m256d b = _mm256_loadu_pd(rhs + i);
+        acc = _mm256_fmadd_pd(a, b, acc);
+    }
+    alignas(32) double lanes[4];
+    _mm256_store_pd(lanes, acc);
+    double sum = lanes[0] + lanes[1] + lanes[2] + lanes[3];
+    for (; i < n; ++i) {
+        sum += lhs[i] * rhs[i];
+    }
+    return sum;
+}
+#endif
+
+#if defined(__aarch64__) || defined(__ARM_NEON)
+inline double dot_neon_d(const double* lhs, const double* rhs, std::size_t n) {
+    std::size_t i = 0;
     float64x2_t acc = vdupq_n_f64(0.0);
     for (; i + 2 <= n; i += 2) {
         const float64x2_t a = vld1q_f64(lhs + i);
         const float64x2_t b = vld1q_f64(rhs + i);
         acc = vaddq_f64(acc, vmulq_f64(a, b));
     }
-    sum = vgetq_lane_f64(acc, 0) + vgetq_lane_f64(acc, 1);
-#endif
-
+    double sum = vgetq_lane_f64(acc, 0) + vgetq_lane_f64(acc, 1);
     for (; i < n; ++i) {
         sum += lhs[i] * rhs[i];
     }
     return sum;
 }
+#endif
 
-// ── SIMD element‑wise vector kernels for double (non‑BLAS fallback) ────
-#if defined(__AVX2__) || defined(__AVX__)
-inline void vector_add_d(double* dst, const double* a, const double* b, std::size_t n) {
+inline double dot_contiguous(const double* lhs, const double* rhs, std::size_t n) {
+#if LINX_X86_SIMD
+    const auto kernel = runtime_cpu_features().selected_kernel;
+#if LINX_COMPILED_FMA
+    if (kernel == SimdKernel::AVX2FMA) {
+        return dot_avx2_fma_d(lhs, rhs, n);
+    }
+#endif
+#if LINX_COMPILED_AVX
+    if (kernel_uses_avx(kernel)) {
+        return dot_avx_d(lhs, rhs, n);
+    }
+#endif
+#if LINX_COMPILED_SSE2
+    if (kernel == SimdKernel::SSE2) {
+        return dot_sse2_d(lhs, rhs, n);
+    }
+#endif
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+    return dot_neon_d(lhs, rhs, n);
+#endif
+    return dot_scalar_d(lhs, rhs, n);
+}
+
+inline void vector_add_scalar_d(double* dst, const double* a, const double* b, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) dst[i] = a[i] + b[i];
+}
+
+inline void vector_sub_scalar_d(double* dst, const double* a, const double* b, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) dst[i] = a[i] - b[i];
+}
+
+inline void vector_mul_scalar_d(double* dst, const double* a, const double* b, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) dst[i] = a[i] * b[i];
+}
+
+inline void vector_neg_scalar_d(double* dst, const double* a, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) dst[i] = -a[i];
+}
+
+inline void vector_scale_scalar_d(double* dst, const double* a, double s, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) dst[i] = a[i] * s;
+}
+
+#if LINX_COMPILED_SSE2
+LINX_TARGET_SSE2 inline void vector_add_sse2_d(double* dst, const double* a, const double* b, std::size_t n) {
+    std::size_t i = 0;
+    for (; i + 2 <= n; i += 2) {
+        const __m128d va = _mm_loadu_pd(a + i);
+        const __m128d vb = _mm_loadu_pd(b + i);
+        _mm_storeu_pd(dst + i, _mm_add_pd(va, vb));
+    }
+    vector_add_scalar_d(dst + i, a + i, b + i, n - i);
+}
+
+LINX_TARGET_SSE2 inline void vector_sub_sse2_d(double* dst, const double* a, const double* b, std::size_t n) {
+    std::size_t i = 0;
+    for (; i + 2 <= n; i += 2) {
+        const __m128d va = _mm_loadu_pd(a + i);
+        const __m128d vb = _mm_loadu_pd(b + i);
+        _mm_storeu_pd(dst + i, _mm_sub_pd(va, vb));
+    }
+    vector_sub_scalar_d(dst + i, a + i, b + i, n - i);
+}
+
+LINX_TARGET_SSE2 inline void vector_mul_sse2_d(double* dst, const double* a, const double* b, std::size_t n) {
+    std::size_t i = 0;
+    for (; i + 2 <= n; i += 2) {
+        const __m128d va = _mm_loadu_pd(a + i);
+        const __m128d vb = _mm_loadu_pd(b + i);
+        _mm_storeu_pd(dst + i, _mm_mul_pd(va, vb));
+    }
+    vector_mul_scalar_d(dst + i, a + i, b + i, n - i);
+}
+
+LINX_TARGET_SSE2 inline void vector_neg_sse2_d(double* dst, const double* a, std::size_t n) {
+    std::size_t i = 0;
+    const __m128d zero = _mm_setzero_pd();
+    for (; i + 2 <= n; i += 2) {
+        const __m128d va = _mm_loadu_pd(a + i);
+        _mm_storeu_pd(dst + i, _mm_sub_pd(zero, va));
+    }
+    vector_neg_scalar_d(dst + i, a + i, n - i);
+}
+
+LINX_TARGET_SSE2 inline void vector_scale_sse2_d(double* dst, const double* a, double s, std::size_t n) {
+    std::size_t i = 0;
+    const __m128d vs = _mm_set1_pd(s);
+    for (; i + 2 <= n; i += 2) {
+        const __m128d va = _mm_loadu_pd(a + i);
+        _mm_storeu_pd(dst + i, _mm_mul_pd(va, vs));
+    }
+    vector_scale_scalar_d(dst + i, a + i, s, n - i);
+}
+#endif
+
+#if LINX_COMPILED_AVX
+LINX_TARGET_AVX inline void vector_add_avx_d(double* dst, const double* a, const double* b, std::size_t n) {
     std::size_t i = 0;
     for (; i + 4 <= n; i += 4) {
-        __m256d va = _mm256_loadu_pd(a + i);
-        __m256d vb = _mm256_loadu_pd(b + i);
+        const __m256d va = _mm256_loadu_pd(a + i);
+        const __m256d vb = _mm256_loadu_pd(b + i);
         _mm256_storeu_pd(dst + i, _mm256_add_pd(va, vb));
     }
-    for (; i < n; ++i) dst[i] = a[i] + b[i];
+    vector_add_scalar_d(dst + i, a + i, b + i, n - i);
 }
-inline void vector_sub_d(double* dst, const double* a, const double* b, std::size_t n) {
+
+LINX_TARGET_AVX inline void vector_sub_avx_d(double* dst, const double* a, const double* b, std::size_t n) {
     std::size_t i = 0;
     for (; i + 4 <= n; i += 4) {
-        __m256d va = _mm256_loadu_pd(a + i);
-        __m256d vb = _mm256_loadu_pd(b + i);
+        const __m256d va = _mm256_loadu_pd(a + i);
+        const __m256d vb = _mm256_loadu_pd(b + i);
         _mm256_storeu_pd(dst + i, _mm256_sub_pd(va, vb));
     }
-    for (; i < n; ++i) dst[i] = a[i] - b[i];
+    vector_sub_scalar_d(dst + i, a + i, b + i, n - i);
 }
-inline void vector_mul_d(double* dst, const double* a, const double* b, std::size_t n) {
+
+LINX_TARGET_AVX inline void vector_mul_avx_d(double* dst, const double* a, const double* b, std::size_t n) {
     std::size_t i = 0;
     for (; i + 4 <= n; i += 4) {
-        __m256d va = _mm256_loadu_pd(a + i);
-        __m256d vb = _mm256_loadu_pd(b + i);
+        const __m256d va = _mm256_loadu_pd(a + i);
+        const __m256d vb = _mm256_loadu_pd(b + i);
         _mm256_storeu_pd(dst + i, _mm256_mul_pd(va, vb));
     }
-    for (; i < n; ++i) dst[i] = a[i] * b[i];
+    vector_mul_scalar_d(dst + i, a + i, b + i, n - i);
 }
-inline void vector_neg_d(double* dst, const double* a, std::size_t n) {
-    static const __m256d zero = _mm256_setzero_pd();
+
+LINX_TARGET_AVX inline void vector_neg_avx_d(double* dst, const double* a, std::size_t n) {
     std::size_t i = 0;
+    const __m256d zero = _mm256_setzero_pd();
     for (; i + 4 <= n; i += 4) {
-        __m256d va = _mm256_loadu_pd(a + i);
+        const __m256d va = _mm256_loadu_pd(a + i);
         _mm256_storeu_pd(dst + i, _mm256_sub_pd(zero, va));
     }
-    for (; i < n; ++i) dst[i] = -a[i];
+    vector_neg_scalar_d(dst + i, a + i, n - i);
 }
-inline void vector_scale_d(double* dst, const double* a, double s, std::size_t n) {
-    __m256d vs = _mm256_set1_pd(s);
+
+LINX_TARGET_AVX inline void vector_scale_avx_d(double* dst, const double* a, double s, std::size_t n) {
     std::size_t i = 0;
+    const __m256d vs = _mm256_set1_pd(s);
     for (; i + 4 <= n; i += 4) {
-        __m256d va = _mm256_loadu_pd(a + i);
+        const __m256d va = _mm256_loadu_pd(a + i);
         _mm256_storeu_pd(dst + i, _mm256_mul_pd(va, vs));
     }
-    for (; i < n; ++i) dst[i] = a[i] * s;
+    vector_scale_scalar_d(dst + i, a + i, s, n - i);
 }
-#elif defined(__aarch64__) || defined(__ARM_NEON)
-inline void vector_add_d(double* dst, const double* a, const double* b, std::size_t n) {
+#endif
+
+#if defined(__aarch64__) || defined(__ARM_NEON)
+inline void vector_add_neon_d(double* dst, const double* a, const double* b, std::size_t n) {
     std::size_t i = 0;
     for (; i + 2 <= n; i += 2) {
         float64x2_t va = vld1q_f64(a + i);
         float64x2_t vb = vld1q_f64(b + i);
         vst1q_f64(dst + i, vaddq_f64(va, vb));
     }
-    for (; i < n; ++i) dst[i] = a[i] + b[i];
+    vector_add_scalar_d(dst + i, a + i, b + i, n - i);
 }
-inline void vector_sub_d(double* dst, const double* a, const double* b, std::size_t n) {
+
+inline void vector_sub_neon_d(double* dst, const double* a, const double* b, std::size_t n) {
     std::size_t i = 0;
     for (; i + 2 <= n; i += 2) {
         float64x2_t va = vld1q_f64(a + i);
         float64x2_t vb = vld1q_f64(b + i);
         vst1q_f64(dst + i, vsubq_f64(va, vb));
     }
-    for (; i < n; ++i) dst[i] = a[i] - b[i];
+    vector_sub_scalar_d(dst + i, a + i, b + i, n - i);
 }
-inline void vector_mul_d(double* dst, const double* a, const double* b, std::size_t n) {
+
+inline void vector_mul_neon_d(double* dst, const double* a, const double* b, std::size_t n) {
     std::size_t i = 0;
     for (; i + 2 <= n; i += 2) {
         float64x2_t va = vld1q_f64(a + i);
         float64x2_t vb = vld1q_f64(b + i);
         vst1q_f64(dst + i, vmulq_f64(va, vb));
     }
-    for (; i < n; ++i) dst[i] = a[i] * b[i];
+    vector_mul_scalar_d(dst + i, a + i, b + i, n - i);
 }
-inline void vector_neg_d(double* dst, const double* a, std::size_t n) {
+
+inline void vector_neg_neon_d(double* dst, const double* a, std::size_t n) {
     std::size_t i = 0;
     for (; i + 2 <= n; i += 2) {
         float64x2_t va = vld1q_f64(a + i);
         vst1q_f64(dst + i, vnegq_f64(va));
     }
-    for (; i < n; ++i) dst[i] = -a[i];
+    vector_neg_scalar_d(dst + i, a + i, n - i);
 }
-inline void vector_scale_d(double* dst, const double* a, double s, std::size_t n) {
-    float64x2_t vs = vdupq_n_f64(s);
+
+inline void vector_scale_neon_d(double* dst, const double* a, double s, std::size_t n) {
     std::size_t i = 0;
+    float64x2_t vs = vdupq_n_f64(s);
     for (; i + 2 <= n; i += 2) {
         float64x2_t va = vld1q_f64(a + i);
         vst1q_f64(dst + i, vmulq_f64(va, vs));
     }
-    for (; i < n; ++i) dst[i] = a[i] * s;
+    vector_scale_scalar_d(dst + i, a + i, s, n - i);
 }
 #endif
+
+inline void vector_add_d(double* dst, const double* a, const double* b, std::size_t n) {
+#if LINX_X86_SIMD
+    const auto kernel = runtime_cpu_features().selected_kernel;
+#if LINX_COMPILED_AVX
+    if (kernel_uses_avx(kernel)) {
+        vector_add_avx_d(dst, a, b, n);
+        return;
+    }
+#endif
+#if LINX_COMPILED_SSE2
+    if (kernel == SimdKernel::SSE2) {
+        vector_add_sse2_d(dst, a, b, n);
+        return;
+    }
+#endif
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+    vector_add_neon_d(dst, a, b, n);
+    return;
+#endif
+    vector_add_scalar_d(dst, a, b, n);
+}
+
+inline void vector_sub_d(double* dst, const double* a, const double* b, std::size_t n) {
+#if LINX_X86_SIMD
+    const auto kernel = runtime_cpu_features().selected_kernel;
+#if LINX_COMPILED_AVX
+    if (kernel_uses_avx(kernel)) {
+        vector_sub_avx_d(dst, a, b, n);
+        return;
+    }
+#endif
+#if LINX_COMPILED_SSE2
+    if (kernel == SimdKernel::SSE2) {
+        vector_sub_sse2_d(dst, a, b, n);
+        return;
+    }
+#endif
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+    vector_sub_neon_d(dst, a, b, n);
+    return;
+#endif
+    vector_sub_scalar_d(dst, a, b, n);
+}
+
+inline void vector_mul_d(double* dst, const double* a, const double* b, std::size_t n) {
+#if LINX_X86_SIMD
+    const auto kernel = runtime_cpu_features().selected_kernel;
+#if LINX_COMPILED_AVX
+    if (kernel_uses_avx(kernel)) {
+        vector_mul_avx_d(dst, a, b, n);
+        return;
+    }
+#endif
+#if LINX_COMPILED_SSE2
+    if (kernel == SimdKernel::SSE2) {
+        vector_mul_sse2_d(dst, a, b, n);
+        return;
+    }
+#endif
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+    vector_mul_neon_d(dst, a, b, n);
+    return;
+#endif
+    vector_mul_scalar_d(dst, a, b, n);
+}
+
+inline void vector_neg_d(double* dst, const double* a, std::size_t n) {
+#if LINX_X86_SIMD
+    const auto kernel = runtime_cpu_features().selected_kernel;
+#if LINX_COMPILED_AVX
+    if (kernel_uses_avx(kernel)) {
+        vector_neg_avx_d(dst, a, n);
+        return;
+    }
+#endif
+#if LINX_COMPILED_SSE2
+    if (kernel == SimdKernel::SSE2) {
+        vector_neg_sse2_d(dst, a, n);
+        return;
+    }
+#endif
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+    vector_neg_neon_d(dst, a, n);
+    return;
+#endif
+    vector_neg_scalar_d(dst, a, n);
+}
+
+inline void vector_scale_d(double* dst, const double* a, double s, std::size_t n) {
+#if LINX_X86_SIMD
+    const auto kernel = runtime_cpu_features().selected_kernel;
+#if LINX_COMPILED_AVX
+    if (kernel_uses_avx(kernel)) {
+        vector_scale_avx_d(dst, a, s, n);
+        return;
+    }
+#endif
+#if LINX_COMPILED_SSE2
+    if (kernel == SimdKernel::SSE2) {
+        vector_scale_sse2_d(dst, a, s, n);
+        return;
+    }
+#endif
+#elif defined(__aarch64__) || defined(__ARM_NEON)
+    vector_scale_neon_d(dst, a, s, n);
+    return;
+#endif
+    vector_scale_scalar_d(dst, a, s, n);
+}
 
 } // namespace detail
 
@@ -573,15 +1208,27 @@ inline std::string hardware_backend() {
     return "Apple Accelerate BLAS/LAPACK + std::thread task parallel (arm64)";
 #elif LINX_HAS_BLAS
     return "Apple Accelerate BLAS/LAPACK + std::thread task parallel (Intel)";
-#elif defined(__AVX2__)
-    return "AVX2 SIMD + std::thread row/task parallel";
-#elif defined(__AVX__)
-    return "AVX SIMD + std::thread row/task parallel";
-#elif defined(__aarch64__) || defined(__ARM_NEON)
-    return "ARM NEON SIMD + std::thread row/task parallel";
 #else
-    return "scalar kernel + std::thread row/task parallel";
+    return detail::runtime_backend_description();
 #endif
+}
+
+inline std::string cpu_optimization_summary() {
+#if LINX_HAS_BLAS && defined(__aarch64__) && defined(__APPLE__)
+    return "selected=Apple Accelerate BLAS/LAPACK, arch=arm64, threads=Accelerate";
+#elif LINX_HAS_BLAS
+    return "selected=Apple Accelerate BLAS/LAPACK, arch=Intel, threads=Accelerate";
+#else
+    return detail::cpu_optimization_description();
+#endif
+}
+
+inline std::size_t auto_strassen_min() {
+    return detail::runtime_strassen_min();
+}
+
+inline std::size_t auto_strassen_base() {
+    return detail::runtime_strassen_base();
 }
 
 template <typename T>
@@ -703,7 +1350,7 @@ Matrix<T> strassen_square(const Matrix<T>& lhs, const Matrix<T>& rhs, std::size_
 }
 
 inline std::size_t strassen_effective_threshold(std::size_t threshold) {
-    return std::max(threshold, static_cast<std::size_t>(LINX_M2_STRASSEN_BASE));
+    return std::max(threshold, runtime_strassen_base());
 }
 
 struct ConstMatrixViewD {
@@ -999,11 +1646,11 @@ Matrix<T> matmul_strassen(const Matrix<T>& lhs, const Matrix<T>& rhs, std::size_
 
 template <typename T>
 Matrix<T> matmul(const Matrix<T>& lhs, const Matrix<T>& rhs) {
-    // Square matrices with N > LINX_M2_STRASSEN_MIN use Strassen
+    // Square matrices above the runtime-tuned cutoff use Strassen.
     if (lhs.rows() == lhs.cols() && rhs.rows() == rhs.cols()
         && lhs.cols() == rhs.rows()
-        && lhs.rows() > static_cast<std::size_t>(LINX_M2_STRASSEN_MIN)) {
-        return matmul_strassen(lhs, rhs, LINX_M2_STRASSEN_BASE);
+        && lhs.rows() > detail::runtime_strassen_min()) {
+        return matmul_strassen(lhs, rhs, detail::runtime_strassen_base());
     }
     return matmul_classic(lhs, rhs);
 }

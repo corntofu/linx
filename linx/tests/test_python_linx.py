@@ -60,6 +60,8 @@ def test_condition_number():
     assert linx.condition_number(a) > 1.0
     backend = linx.hardware_backend()
     assert isinstance(backend, str) and len(backend) > 0
+    summary = linx.cpu_optimization_summary()
+    assert isinstance(summary, str) and len(summary) > 0
 
 
 # ── new Matrix class tests ──────────────────────────────────────────────────

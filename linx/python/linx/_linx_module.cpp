@@ -136,11 +136,11 @@ PyObject* binary_elementwise(PyObject* lhs_object, PyObject* rhs_object, BinaryO
     }
 #else
     if (op == BinaryOp::Add) {
-        for (std::size_t i = 0; i < count; ++i) dst[i] = lhs[i] + rhs[i];
+        la::detail::vector_add_d(dst, lhs, rhs, count);
     } else if (op == BinaryOp::Subtract) {
-        for (std::size_t i = 0; i < count; ++i) dst[i] = lhs[i] - rhs[i];
+        la::detail::vector_sub_d(dst, lhs, rhs, count);
     } else {
-        for (std::size_t i = 0; i < count; ++i) dst[i] = lhs[i] * rhs[i];
+        la::detail::vector_mul_d(dst, lhs, rhs, count);
     }
 #endif
     Py_END_ALLOW_THREADS
@@ -175,7 +175,7 @@ PyObject* scalar_elementwise(PyObject* matrix_object, double scalar) {
 #if LINX_HAS_BLAS
     vDSP_vsmulD(src, 1, &scalar, dst, 1, static_cast<vDSP_Length>(count));
 #else
-    for (std::size_t i = 0; i < count; ++i) dst[i] = src[i] * scalar;
+    la::detail::vector_scale_d(dst, src, scalar, count);
 #endif
     Py_END_ALLOW_THREADS
 
@@ -208,7 +208,7 @@ PyObject* neg_elementwise(PyObject* matrix_object) {
 #if LINX_HAS_BLAS
     vDSP_vnegD(src, 1, dst, 1, static_cast<vDSP_Length>(count));
 #else
-    for (std::size_t i = 0; i < count; ++i) dst[i] = -src[i];
+    la::detail::vector_neg_d(dst, src, count);
 #endif
     Py_END_ALLOW_THREADS
 
@@ -713,7 +713,7 @@ PyObject* py_inverse_schur(PyObject*, PyObject* args, PyObject* kwargs) {
 PyObject* py_inverse_schur_strassen(PyObject*, PyObject* args, PyObject* kwargs) {
     PyObject* matrix_object = nullptr;
     int min_block = LINX_LAPACK_INVERSE_MAX;
-    int strassen_threshold = LINX_M2_STRASSEN_BASE;
+    int strassen_threshold = static_cast<int>(la::auto_strassen_base());
     double eps = 1e-12;
 
     static const char* kwlist[] = {"matrix", "min_block", "strassen_threshold", "eps", nullptr};
@@ -788,7 +788,7 @@ PyObject* py_frobenius_norm(PyObject*, PyObject* args) {
         vDSP_svesqD(src, 1, &sum_sq, static_cast<vDSP_Length>(count));
     }
 #else
-    for (std::size_t i = 0; i < count; ++i) sum_sq += src[i] * src[i];
+    sum_sq = la::detail::dot_contiguous(src, src, count);
 #endif
     Py_END_ALLOW_THREADS
 
@@ -915,6 +915,10 @@ PyObject* py_hardware_backend(PyObject*, PyObject*) {
     return PyUnicode_FromString(la::hardware_backend().c_str());
 }
 
+PyObject* py_cpu_optimization_summary(PyObject*, PyObject*) {
+    return PyUnicode_FromString(la::cpu_optimization_summary().c_str());
+}
+
 PyObject* py_trace(PyObject*, PyObject* args) {
     PyObject* obj = nullptr;
     if (!PyArg_ParseTuple(args, "O:trace", &obj))
@@ -991,7 +995,8 @@ PyMethodDef methods[] = {
     {"condition_number", reinterpret_cast<PyCFunction>(py_condition_number), METH_VARARGS | METH_KEYWORDS, "Frobenius condition number."},
     {"frobenius_norm", py_frobenius_norm, METH_VARARGS, "Frobenius norm (vDSP)."},
     {"residual_norm", py_residual_norm, METH_VARARGS, "Residual norm ||A @ A_inv - I||_F."},
-    {"hardware_backend", py_hardware_backend, METH_NOARGS, "Return the compiled backend."},
+    {"hardware_backend", py_hardware_backend, METH_NOARGS, "Return the selected backend."},
+    {"cpu_optimization_summary", py_cpu_optimization_summary, METH_NOARGS, "Return runtime CPU optimization details."},
     {"trace", py_trace, METH_VARARGS, "Trace of a square matrix."},
     {"det", reinterpret_cast<PyCFunction>(py_det), METH_VARARGS | METH_KEYWORDS, "Determinant of a square matrix (LU via LAPACK)."},
     {nullptr, nullptr, 0, nullptr}

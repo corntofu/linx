@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import platform
 import sys
 
@@ -8,19 +9,31 @@ from setuptools import Extension, setup
 
 ROOT = Path(__file__).resolve().parent
 
-extra_compile_args = [
-    "-std=c++17",
-    "-O3",
-    "-DNDEBUG",
-    "-fno-math-errno",
-    "-ffast-math",
-    "-funroll-loops",
-    "-ftree-vectorize",
-]
 define_macros = []
-
 extra_link_args = []
-if sys.platform == "darwin":
+
+if sys.platform == "win32":
+    define_macros.append(("LINX_WINDOWS_INTEL_AUTODETECT", "1"))
+    extra_compile_args = [
+        "/std:c++17",
+        "/O2",
+        "/DNDEBUG",
+        "/EHsc",
+        "/fp:fast",
+        "/DWIN32_LEAN_AND_MEAN",
+    ]
+    if os.environ.get("LINX_WINDOWS_INTEL_AVX2") == "1":
+        extra_compile_args.append("/arch:AVX2")
+elif sys.platform == "darwin":
+    extra_compile_args = [
+        "-std=c++17",
+        "-O3",
+        "-DNDEBUG",
+        "-fno-math-errno",
+        "-ffast-math",
+        "-funroll-loops",
+        "-ftree-vectorize",
+    ]
     define_macros.append(("LINX_USE_ACCELERATE", "1"))
     extra_compile_args += ["-flto", "-fvectorize", "-Wno-deprecated-declarations"]
     extra_link_args += ["-flto", "-framework", "Accelerate"]
@@ -28,10 +41,20 @@ if sys.platform == "darwin":
         extra_compile_args += ["-mcpu=apple-m1"]
     else:
         extra_compile_args += ["-march=native"]
-elif platform.machine() in {"arm64", "aarch64"}:
-    extra_compile_args += ["-mcpu=native"]
 else:
-    extra_compile_args += ["-march=native"]
+    extra_compile_args = [
+        "-std=c++17",
+        "-O3",
+        "-DNDEBUG",
+        "-fno-math-errno",
+        "-ffast-math",
+        "-funroll-loops",
+        "-ftree-vectorize",
+    ]
+    if platform.machine() in {"arm64", "aarch64"}:
+        extra_compile_args += ["-mcpu=native"]
+    else:
+        extra_compile_args += ["-march=native"]
 
 
 extension = Extension(
