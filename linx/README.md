@@ -46,12 +46,12 @@ NumPy처럼 읽기 쉬운 행렬 생성/연산 API를 제공하고, Apple Accele
 |---|---|
 | `matmul(lhs, rhs)` | 행렬 곱셈 — 큰 정방행렬은 Strassen, 그 외는 classic |
 | `matmul_classic(lhs, rhs)` | BLAS `cblas_dgemm` 또는 AVX2/NEON SIMD + 멀티스레드 |
-| `matmul_strassen(lhs, rhs, threshold)` | Strassen 알고리즘 (재귀, 패딩 후 블록 분할) |
+| `matmul_strassen(lhs, rhs, threshold)` | Strassen 알고리즘 (재귀, 홀수 크기는 padding 후 블록 분할) |
 | `solve(a, b)` | `A @ X = B` — LAPACK `dgesv_` 또는 Gauss-Jordan |
 | `least_squares(a, b)` | `min ||A·X-B||₂` — LAPACK `dgels_` 또는 normal equations fallback |
 | `inverse(matrix)` | 역행렬 — 기본 Schur complement 방식 |
 | `inverse_lu(matrix)` | LU 분해 역행렬 |
-| `inverse_schur(matrix, min_block)` | Schur complement 재귀 역행렬 (대형 행렬용) |
+| `inverse_schur(matrix, min_block)` | Schur complement 재귀 역행렬 (홀수 크기는 `diag(A, I)` padding 후 crop) |
 | `inverse_regularized(matrix, lambda)` | `A + λI` 후 역행렬 |
 | `det(matrix)` | 행렬식 — LAPACK `dgetrf_` 또는 Gauss-Jordan |
 | `trace(matrix)` | 대각합 |
@@ -113,6 +113,7 @@ LINX_DISABLE_STRASSEN_PARALLEL=1 ./build/linx_demo
 ### Strassen 부분 곱셈 선행 관계
 
 `A`와 `B`를 각각 2×2 블록으로 나누면 P1..P7은 입력 합/차가 준비된 뒤 서로 독립입니다. 따라서 linx는 아래 순서로 실행합니다.
+홀수 크기 블록은 LU/LAPACK fallback으로 끊지 않고 0-padding 후 Strassen을 적용하고, 결과를 원래 크기로 crop합니다.
 
 | 단계 | 작업 |
 |---|---|

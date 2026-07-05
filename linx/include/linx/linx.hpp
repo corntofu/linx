@@ -1316,6 +1316,13 @@ Matrix<T> pad_square(const Matrix<T>& input, std::size_t size) {
     return out;
 }
 
+template <typename T>
+Matrix<T> pad_square_identity(const Matrix<T>& input, std::size_t size) {
+    Matrix<T> out = Matrix<T>::eye(size);
+    out.set_block(0, 0, input);
+    return out;
+}
+
 inline bool strassen_parallel_enabled(std::size_t n, std::size_t depth);
 
 template <typename T>
@@ -1324,6 +1331,13 @@ Matrix<T> strassen_square_impl(const Matrix<T>& lhs, const Matrix<T>& rhs,
     const std::size_t n = lhs.rows();
     if (n <= threshold) {
         return matmul_classic(lhs, rhs);
+    }
+    if (n % 2 != 0) {
+        const std::size_t padded_size = n + 1;
+        const auto padded_lhs = pad_square(lhs, padded_size);
+        const auto padded_rhs = pad_square(rhs, padded_size);
+        return strassen_square_impl(padded_lhs, padded_rhs, threshold, depth)
+            .block(0, 0, n, n);
     }
 
     const std::size_t h = n / 2;
@@ -1600,6 +1614,42 @@ inline std::vector<double> strassen_product_with_operands(
     return strassen_product(lhs_arg, rhs_arg, n, threshold, depth);
 }
 
+inline void copy_view_to_padded(ConstMatrixViewD src, double* dst,
+                                std::size_t n, std::size_t padded_size) {
+    std::fill(dst, dst + padded_size * padded_size, 0.0);
+    for (std::size_t r = 0; r < n; ++r) {
+        std::memcpy(dst + r * padded_size,
+                    src.data + r * src.stride,
+                    n * sizeof(double));
+    }
+}
+
+inline void copy_padded_to_view(ConstMatrixViewD src, MatrixViewD dst, std::size_t n) {
+    for (std::size_t r = 0; r < n; ++r) {
+        std::memcpy(dst.data + r * dst.stride,
+                    src.data + r * src.stride,
+                    n * sizeof(double));
+    }
+}
+
+inline void strassen_view_padded(ConstMatrixViewD lhs, ConstMatrixViewD rhs,
+                                 MatrixViewD out, std::size_t n,
+                                 std::size_t threshold, std::size_t depth) {
+    const std::size_t padded_size = n + 1;
+    std::vector<double> lhs_padded(padded_size * padded_size);
+    std::vector<double> rhs_padded(padded_size * padded_size);
+    std::vector<double> out_padded(padded_size * padded_size);
+
+    copy_view_to_padded(lhs, lhs_padded.data(), n, padded_size);
+    copy_view_to_padded(rhs, rhs_padded.data(), n, padded_size);
+
+    strassen_view_impl({lhs_padded.data(), padded_size},
+                       {rhs_padded.data(), padded_size},
+                       {out_padded.data(), padded_size},
+                       padded_size, threshold, depth);
+    copy_padded_to_view({out_padded.data(), padded_size}, out, n);
+}
+
 inline void strassen_view_sequential(ConstMatrixViewD lhs, ConstMatrixViewD rhs,
                                      MatrixViewD out, std::size_t n,
                                      std::size_t threshold, std::size_t depth) {
@@ -1743,8 +1793,12 @@ inline void strassen_view_parallel(ConstMatrixViewD lhs, ConstMatrixViewD rhs,
 inline void strassen_view_impl(ConstMatrixViewD lhs, ConstMatrixViewD rhs,
                                MatrixViewD out, std::size_t n,
                                std::size_t threshold, std::size_t depth) {
-    if (n <= threshold || n % 2 != 0) {
+    if (n <= threshold) {
         gemm_view(lhs, rhs, out, n);
+        return;
+    }
+    if (n % 2 != 0) {
+        strassen_view_padded(lhs, rhs, out, n, threshold, depth);
         return;
     }
 
@@ -2053,6 +2107,11 @@ Matrix<T> inverse_schur(const Matrix<T>& matrix, std::size_t min_block = 32, T e
 
     const std::size_t n = matrix.rows();
 
+    if (n > 1 && n % 2 != 0) {
+        const auto padded = detail::pad_square_identity(matrix, n + 1);
+        return inverse_schur(padded, min_block, eps).block(0, 0, n, n);
+    }
+
     // ── 작은/중간 행렬은 LAPACK / LU로 직접 처리 ─────────────────
     if (n <= static_cast<std::size_t>(LINX_LAPACK_INVERSE_MAX)) {
 #if LINX_HAS_BLAS
@@ -2063,8 +2122,8 @@ Matrix<T> inverse_schur(const Matrix<T>& matrix, std::size_t min_block = 32, T e
         return inverse_lu(matrix, eps);
     }
 
-    // ── base case: min_block 이하 or 홀수 → LU 분해 ────────────────────
-    if (n <= min_block || n % 2 != 0) {
+    // ── base case: min_block 이하 → LU 분해 ────────────────────
+    if (n <= min_block) {
 #if LINX_HAS_BLAS
         if constexpr (std::is_same<T, double>::value) {
             return detail::inverse_lapack(matrix, eps);
@@ -2134,7 +2193,13 @@ Matrix<T> inverse_schur_strassen(const Matrix<T>& matrix,
     const std::size_t n = matrix.rows();
     const std::size_t block = std::max(min_block, std::size_t{1});
 
-    if (n <= block || n % 2 != 0) {
+    if (n > 1 && n % 2 != 0) {
+        const auto padded = detail::pad_square_identity(matrix, n + 1);
+        return inverse_schur_strassen(padded, block, strassen_threshold, eps)
+            .block(0, 0, n, n);
+    }
+
+    if (n <= block) {
 #if LINX_HAS_BLAS
         if constexpr (std::is_same<T, double>::value) {
             return detail::inverse_lapack(matrix, eps);

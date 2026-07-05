@@ -27,9 +27,28 @@ void test_strassen_matches_classic() {
     auto b = la::Matrix<double>::arange(8, 8, 0.5, 0.25);
     assert(la::matmul_strassen(a, b, 2).allclose(la::matmul_classic(a, b)));
 
+    auto odd_a = la::Matrix<double>::arange(5, 5, 1.0);
+    auto odd_b = la::Matrix<double>::arange(5, 5, 0.5, 0.25);
+    assert(la::matmul_strassen(odd_a, odd_b, 2).allclose(la::matmul_classic(odd_a, odd_b)));
+    la::Matrix<double> odd_view_out(5, 5);
+    la::detail::strassen_view(
+        {odd_a.data().data(), odd_a.cols()},
+        {odd_b.data().data(), odd_b.cols()},
+        {odd_view_out.data().data(), odd_view_out.cols()},
+        5,
+        2
+    );
+    assert(odd_view_out.allclose(la::matmul_classic(odd_a, odd_b)));
+
     auto af = la::Matrix<float>::arange(8, 8, 1.0f);
     auto bf = la::Matrix<float>::arange(8, 8, 0.5f, 0.25f);
     assert(la::matmul_strassen(af, bf, 2).allclose(la::matmul_classic(af, bf), 1e-4f, 1e-4f));
+
+    auto odd_af = la::Matrix<float>::arange(5, 5, 1.0f);
+    auto odd_bf = la::Matrix<float>::arange(5, 5, 0.5f, 0.25f);
+    assert(la::matmul_strassen(odd_af, odd_bf, 2).allclose(la::matmul_classic(odd_af, odd_bf), 1e-4f, 1e-4f));
+    assert(la::detail::strassen_square(odd_af, odd_bf, 2)
+        .allclose(la::matmul_classic(odd_af, odd_bf), 1e-4f, 1e-4f));
 }
 
 void test_inverse_lu() {
@@ -54,6 +73,19 @@ void test_inverse_schur() {
 
     auto inv_strassen = la::inverse_schur_strassen(a, 2, 2);
     assert(la::matmul(a, inv_strassen).allclose(la::Matrix<double>::eye(4), 1e-8, 1e-8));
+
+    la::Matrix<double> odd{
+        {6.0, 1.0, 0.0, 0.0, 0.5},
+        {1.0, 6.0, 1.0, 0.0, 0.0},
+        {0.0, 1.0, 6.0, 1.0, 0.0},
+        {0.0, 0.0, 1.0, 6.0, 1.0},
+        {0.5, 0.0, 0.0, 1.0, 6.0},
+    };
+    auto odd_inv = la::inverse_schur(odd, 2);
+    assert(la::matmul(odd, odd_inv).allclose(la::Matrix<double>::eye(5), 1e-8, 1e-8));
+    auto odd_inv_strassen = la::inverse_schur_strassen(odd, 2, 2);
+    assert(la::matmul(odd, odd_inv_strassen).allclose(la::Matrix<double>::eye(5), 1e-8, 1e-8));
+
     assert(!la::hardware_backend().empty());
     assert(!la::cpu_optimization_summary().empty());
     assert(la::auto_strassen_min() >= 1);

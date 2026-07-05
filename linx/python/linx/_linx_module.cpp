@@ -636,8 +636,11 @@ PyObject* py_inverse(PyObject*, PyObject* args, PyObject* kwargs) {
             PyErr_SetString(PyExc_ValueError, "inverse requires a square matrix");
             return nullptr;
         }
+        const bool odd_schur_requires_padding =
+            selected != "lu" && n > 1 && (n % 2) != 0;
         if (selected == "lu" ||
-            n <= static_cast<npy_intp>(LINX_LAPACK_INVERSE_MAX)) {
+            (!odd_schur_requires_padding &&
+             n <= static_cast<npy_intp>(LINX_LAPACK_INVERSE_MAX))) {
             return inverse_lapack_array(matrix_array.ptr, regularization);
         }
 #endif
@@ -696,7 +699,9 @@ PyObject* py_inverse_schur(PyObject*, PyObject* args, PyObject* kwargs) {
             PyErr_SetString(PyExc_ValueError, "inverse_schur requires a square matrix");
             return nullptr;
         }
-        if (n <= static_cast<npy_intp>(LINX_LAPACK_INVERSE_MAX)) {
+        const bool odd_requires_padding = n > 1 && (n % 2) != 0;
+        if (!odd_requires_padding &&
+            n <= static_cast<npy_intp>(LINX_LAPACK_INVERSE_MAX)) {
             return inverse_lapack_array(matrix_array.ptr);
         }
 #endif
@@ -744,7 +749,8 @@ PyObject* py_inverse_schur_strassen(PyObject*, PyObject* args, PyObject* kwargs)
             return nullptr;
         }
         const std::size_t block = min_block < 1 ? std::size_t{1} : static_cast<std::size_t>(min_block);
-        if (static_cast<std::size_t>(n) <= block) {
+        const bool odd_requires_padding = n > 1 && (n % 2) != 0;
+        if (!odd_requires_padding && static_cast<std::size_t>(n) <= block) {
             return inverse_lapack_array(matrix_array.ptr);
         }
         auto matrix = matrix_from_array(matrix_array.ptr, "matrix");
