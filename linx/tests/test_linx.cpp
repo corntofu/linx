@@ -26,6 +26,10 @@ void test_strassen_matches_classic() {
     auto a = la::Matrix<double>::arange(8, 8, 1.0);
     auto b = la::Matrix<double>::arange(8, 8, 0.5, 0.25);
     assert(la::matmul_strassen(a, b, 2).allclose(la::matmul_classic(a, b)));
+
+    auto af = la::Matrix<float>::arange(8, 8, 1.0f);
+    auto bf = la::Matrix<float>::arange(8, 8, 0.5f, 0.25f);
+    assert(la::matmul_strassen(af, bf, 2).allclose(la::matmul_classic(af, bf), 1e-4f, 1e-4f));
 }
 
 void test_inverse_lu() {

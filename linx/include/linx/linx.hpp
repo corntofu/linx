@@ -1316,8 +1316,11 @@ Matrix<T> pad_square(const Matrix<T>& input, std::size_t size) {
     return out;
 }
 
+inline bool strassen_parallel_enabled(std::size_t n, std::size_t depth);
+
 template <typename T>
-Matrix<T> strassen_square(const Matrix<T>& lhs, const Matrix<T>& rhs, std::size_t threshold) {
+Matrix<T> strassen_square_impl(const Matrix<T>& lhs, const Matrix<T>& rhs,
+                               std::size_t threshold, std::size_t depth) {
     const std::size_t n = lhs.rows();
     if (n <= threshold) {
         return matmul_classic(lhs, rhs);
@@ -1333,13 +1336,52 @@ Matrix<T> strassen_square(const Matrix<T>& lhs, const Matrix<T>& rhs, std::size_
     const auto g = rhs.block(h, 0, h, h);
     const auto i = rhs.block(h, h, h, h);
 
-    const auto p1 = strassen_square(a, f - i, threshold);
-    const auto p2 = strassen_square(a + b, i, threshold);
-    const auto p3 = strassen_square(c + d, e, threshold);
-    const auto p4 = strassen_square(d, g - e, threshold);
-    const auto p5 = strassen_square(a + d, e + i, threshold);
-    const auto p6 = strassen_square(b - d, g + i, threshold);
-    const auto p7 = strassen_square(a - c, e + f, threshold);
+    Matrix<T> p1;
+    Matrix<T> p2;
+    Matrix<T> p3;
+    Matrix<T> p4;
+    Matrix<T> p5;
+    Matrix<T> p6;
+    Matrix<T> p7;
+
+    if (strassen_parallel_enabled(n, depth)) {
+        auto p1_task = std::async(std::launch::async, [&]() {
+            return strassen_square_impl(a, f - i, threshold, depth + 1);
+        });
+        auto p2_task = std::async(std::launch::async, [&]() {
+            return strassen_square_impl(a + b, i, threshold, depth + 1);
+        });
+        auto p3_task = std::async(std::launch::async, [&]() {
+            return strassen_square_impl(c + d, e, threshold, depth + 1);
+        });
+        auto p4_task = std::async(std::launch::async, [&]() {
+            return strassen_square_impl(d, g - e, threshold, depth + 1);
+        });
+        auto p5_task = std::async(std::launch::async, [&]() {
+            return strassen_square_impl(a + d, e + i, threshold, depth + 1);
+        });
+        auto p6_task = std::async(std::launch::async, [&]() {
+            return strassen_square_impl(b - d, g + i, threshold, depth + 1);
+        });
+        auto p7_task = std::async(std::launch::async, [&]() {
+            return strassen_square_impl(a - c, e + f, threshold, depth + 1);
+        });
+        p1 = p1_task.get();
+        p2 = p2_task.get();
+        p3 = p3_task.get();
+        p4 = p4_task.get();
+        p5 = p5_task.get();
+        p6 = p6_task.get();
+        p7 = p7_task.get();
+    } else {
+        p1 = strassen_square_impl(a, f - i, threshold, depth + 1);
+        p2 = strassen_square_impl(a + b, i, threshold, depth + 1);
+        p3 = strassen_square_impl(c + d, e, threshold, depth + 1);
+        p4 = strassen_square_impl(d, g - e, threshold, depth + 1);
+        p5 = strassen_square_impl(a + d, e + i, threshold, depth + 1);
+        p6 = strassen_square_impl(b - d, g + i, threshold, depth + 1);
+        p7 = strassen_square_impl(a - c, e + f, threshold, depth + 1);
+    }
 
     Matrix<T> out(n, n);
     out.set_block(0, 0, p5 + p4 - p2 + p6);
@@ -1347,6 +1389,11 @@ Matrix<T> strassen_square(const Matrix<T>& lhs, const Matrix<T>& rhs, std::size_
     out.set_block(h, 0, p3 + p4);
     out.set_block(h, h, p1 + p5 - p3 - p7);
     return out;
+}
+
+template <typename T>
+Matrix<T> strassen_square(const Matrix<T>& lhs, const Matrix<T>& rhs, std::size_t threshold) {
+    return strassen_square_impl(lhs, rhs, threshold, 0);
 }
 
 inline std::size_t strassen_effective_threshold(std::size_t threshold) {
@@ -1480,13 +1527,82 @@ inline void combine_strassen_quadrants(MatrixViewD out,
     }
 }
 
-inline void strassen_view(ConstMatrixViewD lhs, ConstMatrixViewD rhs,
-                          MatrixViewD out, std::size_t n, std::size_t threshold) {
-    if (n <= threshold || n % 2 != 0) {
-        gemm_view(lhs, rhs, out, n);
-        return;
+inline void strassen_view_impl(ConstMatrixViewD lhs, ConstMatrixViewD rhs,
+                               MatrixViewD out, std::size_t n,
+                               std::size_t threshold, std::size_t depth);
+
+inline std::size_t strassen_work_estimate(std::size_t n) {
+    const std::size_t limit = std::numeric_limits<std::size_t>::max();
+    if (n != 0 && n > limit / n) {
+        return limit;
+    }
+    const std::size_t square = n * n;
+    if (n != 0 && square > limit / n) {
+        return limit;
+    }
+    return square * n;
+}
+
+inline std::size_t strassen_parallel_depth_limit() {
+    const std::size_t threads = preferred_threads();
+    if (threads >= 128) {
+        return 3;
+    }
+    if (threads >= 32) {
+        return 2;
+    }
+    return threads > 1 ? 1 : 0;
+}
+
+inline bool strassen_parallel_enabled(std::size_t n, std::size_t depth) {
+    const char* disabled = std::getenv("LINX_DISABLE_STRASSEN_PARALLEL");
+    if (disabled != nullptr && disabled[0] != '\0' && disabled[0] != '0') {
+        return false;
+    }
+    if (depth >= strassen_parallel_depth_limit()) {
+        return false;
+    }
+    return task_parallel_enabled(strassen_work_estimate(n));
+}
+
+inline std::vector<double> strassen_product(ConstMatrixViewD lhs,
+                                            ConstMatrixViewD rhs,
+                                            std::size_t n,
+                                            std::size_t threshold,
+                                            std::size_t depth) {
+    std::vector<double> product(n * n);
+    strassen_view_impl(lhs, rhs, {product.data(), n}, n, threshold, depth + 1);
+    return product;
+}
+
+inline std::vector<double> strassen_product_with_operands(
+    ConstMatrixViewD lhs, ConstMatrixViewD rhs,
+    std::size_t n, std::size_t threshold, std::size_t depth,
+    ConstMatrixViewD lhs_rhs, bool lhs_has_sum, bool lhs_subtract_rhs,
+    ConstMatrixViewD rhs_rhs, bool rhs_has_sum, bool rhs_subtract_rhs) {
+
+    std::vector<double> lhs_storage;
+    std::vector<double> rhs_storage;
+    ConstMatrixViewD lhs_arg = lhs;
+    ConstMatrixViewD rhs_arg = rhs;
+
+    if (lhs_has_sum) {
+        lhs_storage.resize(n * n);
+        add_view(lhs_storage.data(), lhs, lhs_rhs, n, lhs_subtract_rhs);
+        lhs_arg = {lhs_storage.data(), n};
+    }
+    if (rhs_has_sum) {
+        rhs_storage.resize(n * n);
+        add_view(rhs_storage.data(), rhs, rhs_rhs, n, rhs_subtract_rhs);
+        rhs_arg = {rhs_storage.data(), n};
     }
 
+    return strassen_product(lhs_arg, rhs_arg, n, threshold, depth);
+}
+
+inline void strassen_view_sequential(ConstMatrixViewD lhs, ConstMatrixViewD rhs,
+                                     MatrixViewD out, std::size_t n,
+                                     std::size_t threshold, std::size_t depth) {
     const std::size_t h = n / 2;
     const auto a11 = subview(lhs, 0, 0);
     const auto a12 = subview(lhs, 0, h);
@@ -1512,41 +1628,137 @@ inline void strassen_view(ConstMatrixViewD lhs, ConstMatrixViewD rhs,
 
     zero_view(out, n);
 
+    // P1 = A11 * (B12 - B22) -> C12, C22
     add_view(s1.data(), b12, b22, h, true);
-    strassen_view(a11, s1_view, product_view, h, threshold);
+    strassen_view_impl(a11, s1_view, product_view, h, threshold, depth + 1);
     accumulate_view(c12, product_const, h, 1.0);
     accumulate_view(c22, product_const, h, 1.0);
 
+    // P2 = (A11 + A12) * B22 -> C11, C12
     add_view(s1.data(), a11, a12, h);
-    strassen_view(s1_view, b22, product_view, h, threshold);
+    strassen_view_impl(s1_view, b22, product_view, h, threshold, depth + 1);
     accumulate_view(c11, product_const, h, -1.0);
     accumulate_view(c12, product_const, h, 1.0);
 
+    // P3 = (A21 + A22) * B11 -> C21, C22
     add_view(s1.data(), a21, a22, h);
-    strassen_view(s1_view, b11, product_view, h, threshold);
+    strassen_view_impl(s1_view, b11, product_view, h, threshold, depth + 1);
     accumulate_view(c21, product_const, h, 1.0);
     accumulate_view(c22, product_const, h, -1.0);
 
+    // P4 = A22 * (B21 - B11) -> C11, C21
     add_view(s1.data(), b21, b11, h, true);
-    strassen_view(a22, s1_view, product_view, h, threshold);
+    strassen_view_impl(a22, s1_view, product_view, h, threshold, depth + 1);
     accumulate_view(c11, product_const, h, 1.0);
     accumulate_view(c21, product_const, h, 1.0);
 
+    // P5 = (A11 + A22) * (B11 + B22) -> C11, C22
     add_view(s1.data(), a11, a22, h);
     add_view(s2.data(), b11, b22, h);
-    strassen_view(s1_view, s2_view, product_view, h, threshold);
+    strassen_view_impl(s1_view, s2_view, product_view, h, threshold, depth + 1);
     accumulate_view(c11, product_const, h, 1.0);
     accumulate_view(c22, product_const, h, 1.0);
 
+    // P6 = (A12 - A22) * (B21 + B22) -> C11
     add_view(s1.data(), a12, a22, h, true);
     add_view(s2.data(), b21, b22, h);
-    strassen_view(s1_view, s2_view, product_view, h, threshold);
+    strassen_view_impl(s1_view, s2_view, product_view, h, threshold, depth + 1);
     accumulate_view(c11, product_const, h, 1.0);
 
+    // P7 = (A11 - A21) * (B11 + B12) -> C22
     add_view(s1.data(), a11, a21, h, true);
     add_view(s2.data(), b11, b12, h);
-    strassen_view(s1_view, s2_view, product_view, h, threshold);
+    strassen_view_impl(s1_view, s2_view, product_view, h, threshold, depth + 1);
     accumulate_view(c22, product_const, h, -1.0);
+}
+
+inline void strassen_view_parallel(ConstMatrixViewD lhs, ConstMatrixViewD rhs,
+                                   MatrixViewD out, std::size_t n,
+                                   std::size_t threshold, std::size_t depth) {
+    const std::size_t h = n / 2;
+    const auto a11 = subview(lhs, 0, 0);
+    const auto a12 = subview(lhs, 0, h);
+    const auto a21 = subview(lhs, h, 0);
+    const auto a22 = subview(lhs, h, h);
+    const auto b11 = subview(rhs, 0, 0);
+    const auto b12 = subview(rhs, 0, h);
+    const auto b21 = subview(rhs, h, 0);
+    const auto b22 = subview(rhs, h, h);
+
+    // Dependency order:
+    // phase 1: prepare independent sum/difference operands for P1..P7.
+    // phase 2: run the seven recursive products concurrently.
+    // phase 3: join products and combine quadrants.
+    auto p1_task = std::async(std::launch::async, [=]() {
+        return strassen_product_with_operands(a11, b12, h, threshold, depth,
+                                              {}, false, false,
+                                              b22, true, true);
+    });
+    auto p2_task = std::async(std::launch::async, [=]() {
+        return strassen_product_with_operands(a11, b22, h, threshold, depth,
+                                              a12, true, false,
+                                              {}, false, false);
+    });
+    auto p3_task = std::async(std::launch::async, [=]() {
+        return strassen_product_with_operands(a21, b11, h, threshold, depth,
+                                              a22, true, false,
+                                              {}, false, false);
+    });
+    auto p4_task = std::async(std::launch::async, [=]() {
+        return strassen_product_with_operands(a22, b21, h, threshold, depth,
+                                              {}, false, false,
+                                              b11, true, true);
+    });
+    auto p5_task = std::async(std::launch::async, [=]() {
+        return strassen_product_with_operands(a11, b11, h, threshold, depth,
+                                              a22, true, false,
+                                              b22, true, false);
+    });
+    auto p6_task = std::async(std::launch::async, [=]() {
+        return strassen_product_with_operands(a12, b21, h, threshold, depth,
+                                              a22, true, true,
+                                              b22, true, false);
+    });
+    auto p7_task = std::async(std::launch::async, [=]() {
+        return strassen_product_with_operands(a11, b11, h, threshold, depth,
+                                              a21, true, true,
+                                              b12, true, false);
+    });
+
+    const auto p1 = p1_task.get();
+    const auto p2 = p2_task.get();
+    const auto p3 = p3_task.get();
+    const auto p4 = p4_task.get();
+    const auto p5 = p5_task.get();
+    const auto p6 = p6_task.get();
+    const auto p7 = p7_task.get();
+
+    combine_strassen_quadrants(out,
+                               {p1.data(), h}, {p2.data(), h},
+                               {p3.data(), h}, {p4.data(), h},
+                               {p5.data(), h}, {p6.data(), h},
+                               {p7.data(), h}, h);
+}
+
+inline void strassen_view_impl(ConstMatrixViewD lhs, ConstMatrixViewD rhs,
+                               MatrixViewD out, std::size_t n,
+                               std::size_t threshold, std::size_t depth) {
+    if (n <= threshold || n % 2 != 0) {
+        gemm_view(lhs, rhs, out, n);
+        return;
+    }
+
+    if (strassen_parallel_enabled(n, depth)) {
+        strassen_view_parallel(lhs, rhs, out, n, threshold, depth);
+        return;
+    }
+
+    strassen_view_sequential(lhs, rhs, out, n, threshold, depth);
+}
+
+inline void strassen_view(ConstMatrixViewD lhs, ConstMatrixViewD rhs,
+                          MatrixViewD out, std::size_t n, std::size_t threshold) {
+    strassen_view_impl(lhs, rhs, out, n, threshold, 0);
 }
 
 inline Matrix<double> strassen_square_fast(const Matrix<double>& lhs,
