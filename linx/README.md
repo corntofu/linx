@@ -49,9 +49,11 @@ NumPy처럼 읽기 쉬운 행렬 생성/연산 API를 제공하고, Apple Accele
 | `matmul_strassen(lhs, rhs, threshold)` | Strassen 알고리즘 (재귀, 홀수 크기는 padding 후 블록 분할) |
 | `solve(a, b)` | `A @ X = B` — LAPACK `dgesv_` 또는 Gauss-Jordan |
 | `least_squares(a, b)` | `min ||A·X-B||₂` — LAPACK `dgels_` 또는 normal equations fallback |
-| `inverse(matrix)` | 역행렬 — 기본 Schur complement 방식 |
+| `inverse(matrix)` | 역행렬 — Schur complement 결과 검증 후 LU/정칙화 fallback |
 | `inverse_lu(matrix)` | LU 분해 역행렬 |
-| `inverse_schur(matrix, min_block)` | Schur complement 재귀 역행렬 (홀수 크기는 `diag(A, I)` padding 후 crop) |
+| `inverse_schur(matrix, min_block)` | Schur complement 재귀 역행렬 (홀수 크기는 `diag(A, I)` padding 후 crop, residual 악화 시 fallback) |
+| `inverse_schur_safe(matrix, min_block)` | residual 검사 기반 Schur → LU → `A + λI` fallback 역행렬 |
+| `inverse_schur_strassen_safe(matrix, min_block, threshold)` | Strassen 곱셈을 쓰는 Schur fallback 역행렬 |
 | `inverse_regularized(matrix, lambda)` | `A + λI` 후 역행렬 |
 | `det(matrix)` | 행렬식 — LAPACK `dgetrf_` 또는 Gauss-Jordan |
 | `trace(matrix)` | 대각합 |
@@ -137,7 +139,7 @@ Python C API와 NumPy C API로 구현. 모든 함수는 GIL을 해제(`Py_BEGIN_
 
 ### 노출된 C 함수
 
-`matmul`, `matmul_strassen`, `solve`, `least_squares`, `inverse`, `inverse_schur`, `frobenius_norm`, `residual_norm`, `condition_number`, `add`, `subtract`, `hadamard`, `scalar_mul`, `transpose`, `neg`, `hardware_backend`, `cpu_optimization_summary`, `trace`, `det`
+`matmul`, `matmul_strassen`, `solve`, `least_squares`, `inverse`, `inverse_schur`, `inverse_schur_strassen`, `frobenius_norm`, `residual_norm`, `condition_number`, `add`, `subtract`, `hadamard`, `scalar_mul`, `transpose`, `neg`, `hardware_backend`, `cpu_optimization_summary`, `trace`, `det`
 
 ---
 
@@ -280,6 +282,13 @@ M = [A B]    S = D - C·A⁻¹·B
 M⁻¹ = [A⁻¹ + A⁻¹·B·S⁻¹·C·A⁻¹   -A⁻¹·B·S⁻¹  ]
       [   -S⁻¹·C·A⁻¹                S⁻¹     ]
 ```
+
+`inverse_schur`와 `inverse_schur_strassen`는 공개 API에서 결과 residual
+`‖M·M⁻¹-I‖_F`를 검사한다. Schur 계산이 예외를 내거나 residual이
+허용치를 넘으면 LU 역행렬로 전환하고, LU도 실패하거나 residual이 더 나쁘면
+대각에 `λI`를 더한 정칙화 LU를 단계적으로 시도한다. 완전 singular 행렬처럼
+정확한 역행렬이 없는 경우에는 시도한 후보 중 residual이 가장 작은 근사
+역행렬을 반환한다.
 
 ---
 

@@ -225,12 +225,12 @@ class Matrix:
     # -- linear algebra --------------------------------------------------------
 
     def inv(self, method="schur", min_block=32, regularization=0.0, eps=1e-12):
-        """Inverse matrix using C++ linx backend."""
+        """Inverse matrix using C++ linx backend with Schur residual fallback."""
         return Matrix(inverse(self._data, method=method, min_block=min_block,
                               regularization=regularization, eps=eps))
 
     def inv_schur_strassen(self, min_block=1024, strassen_threshold=4096, eps=1e-12):
-        """Inverse matrix using Schur complement with Strassen block multiplies."""
+        """Inverse matrix using Schur/Strassen with residual fallback."""
         return Matrix(inverse_schur_strassen(self._data, min_block=min_block,
                                              strassen_threshold=strassen_threshold,
                                              eps=eps))

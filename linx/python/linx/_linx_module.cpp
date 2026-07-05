@@ -636,10 +636,8 @@ PyObject* py_inverse(PyObject*, PyObject* args, PyObject* kwargs) {
             PyErr_SetString(PyExc_ValueError, "inverse requires a square matrix");
             return nullptr;
         }
-        const bool odd_schur_requires_padding =
-            selected != "lu" && n > 1 && (n % 2) != 0;
         if (selected == "lu" ||
-            (!odd_schur_requires_padding &&
+            (regularization > 0.0 &&
              n <= static_cast<npy_intp>(LINX_LAPACK_INVERSE_MAX))) {
             return inverse_lapack_array(matrix_array.ptr, regularization);
         }
@@ -699,11 +697,6 @@ PyObject* py_inverse_schur(PyObject*, PyObject* args, PyObject* kwargs) {
             PyErr_SetString(PyExc_ValueError, "inverse_schur requires a square matrix");
             return nullptr;
         }
-        const bool odd_requires_padding = n > 1 && (n % 2) != 0;
-        if (!odd_requires_padding &&
-            n <= static_cast<npy_intp>(LINX_LAPACK_INVERSE_MAX)) {
-            return inverse_lapack_array(matrix_array.ptr);
-        }
 #endif
         auto matrix = matrix_from_python(matrix_object, "matrix");
         const std::size_t block = min_block < 1 ? 1 : static_cast<std::size_t>(min_block);
@@ -749,10 +742,6 @@ PyObject* py_inverse_schur_strassen(PyObject*, PyObject* args, PyObject* kwargs)
             return nullptr;
         }
         const std::size_t block = min_block < 1 ? std::size_t{1} : static_cast<std::size_t>(min_block);
-        const bool odd_requires_padding = n > 1 && (n % 2) != 0;
-        if (!odd_requires_padding && static_cast<std::size_t>(n) <= block) {
-            return inverse_lapack_array(matrix_array.ptr);
-        }
         auto matrix = matrix_from_array(matrix_array.ptr, "matrix");
 #else
         auto matrix = matrix_from_python(matrix_object, "matrix");
@@ -995,9 +984,9 @@ PyMethodDef methods[] = {
     {"neg", py_neg, METH_VARARGS, "Unary negation (vDSP)."},
     {"solve", py_solve, METH_VARARGS, "Solve A @ X = B."},
     {"least_squares", reinterpret_cast<PyCFunction>(py_least_squares), METH_VARARGS | METH_KEYWORDS, "Solve min ||A @ X - B||_2."},
-    {"inverse", reinterpret_cast<PyCFunction>(py_inverse), METH_VARARGS | METH_KEYWORDS, "Invert a matrix."},
-    {"inverse_schur", reinterpret_cast<PyCFunction>(py_inverse_schur), METH_VARARGS | METH_KEYWORDS, "Invert with Schur complement."},
-    {"inverse_schur_strassen", reinterpret_cast<PyCFunction>(py_inverse_schur_strassen), METH_VARARGS | METH_KEYWORDS, "Invert with Schur complement and Strassen matmul."},
+    {"inverse", reinterpret_cast<PyCFunction>(py_inverse), METH_VARARGS | METH_KEYWORDS, "Invert a matrix with residual fallback."},
+    {"inverse_schur", reinterpret_cast<PyCFunction>(py_inverse_schur), METH_VARARGS | METH_KEYWORDS, "Invert with Schur complement and residual fallback."},
+    {"inverse_schur_strassen", reinterpret_cast<PyCFunction>(py_inverse_schur_strassen), METH_VARARGS | METH_KEYWORDS, "Invert with Schur/Strassen and residual fallback."},
     {"condition_number", reinterpret_cast<PyCFunction>(py_condition_number), METH_VARARGS | METH_KEYWORDS, "Frobenius condition number."},
     {"frobenius_norm", py_frobenius_norm, METH_VARARGS, "Frobenius norm (vDSP)."},
     {"residual_norm", py_residual_norm, METH_VARARGS, "Residual norm ||A @ A_inv - I||_F."},

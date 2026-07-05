@@ -118,6 +118,24 @@ void test_inverse_regularized() {
     assert(inv.cols() == 2);
 }
 
+void test_inverse_auto_fallback() {
+    la::Matrix<double> singular{{1.0, 1.0}, {1.0, 1.0}};
+
+    auto inv = la::inverse_schur_safe(singular, 1, 1e-12, 1e-12, 1e-3, 4);
+    assert(inv.rows() == 2);
+    assert(inv.cols() == 2);
+    assert(std::isfinite(inv(0, 0)));
+    assert(std::isfinite(inv(1, 1)));
+    assert(std::isfinite(la::residual_norm(singular, inv)));
+
+    auto inv_strassen = la::inverse_schur_strassen_safe(singular, 1, 1, 1e-12, 1e-12, 1e-3, 4);
+    assert(inv_strassen.rows() == 2);
+    assert(inv_strassen.cols() == 2);
+    assert(std::isfinite(inv_strassen(0, 0)));
+    assert(std::isfinite(inv_strassen(1, 1)));
+    assert(std::isfinite(la::residual_norm(singular, inv_strassen)));
+}
+
 } // namespace
 
 int main() {
@@ -129,6 +147,7 @@ int main() {
     test_solve();
     test_least_squares();
     test_inverse_regularized();
+    test_inverse_auto_fallback();
 
     std::cout << "all linx tests passed\n";
     return 0;

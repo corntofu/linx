@@ -2100,7 +2100,7 @@ Matrix<T> inverse_lu(const Matrix<T>& matrix, T eps = static_cast<T>(1e-12)) {
 }
 
 template <typename T>
-Matrix<T> inverse_schur(const Matrix<T>& matrix, std::size_t min_block = 32, T eps = static_cast<T>(1e-12)) {
+Matrix<T> inverse_schur_impl(const Matrix<T>& matrix, std::size_t min_block = 32, T eps = static_cast<T>(1e-12)) {
     if (!matrix.square()) {
         throw ShapeError("inverse_schur requires a square matrix");
     }
@@ -2109,7 +2109,7 @@ Matrix<T> inverse_schur(const Matrix<T>& matrix, std::size_t min_block = 32, T e
 
     if (n > 1 && n % 2 != 0) {
         const auto padded = detail::pad_square_identity(matrix, n + 1);
-        return inverse_schur(padded, min_block, eps).block(0, 0, n, n);
+        return inverse_schur_impl(padded, min_block, eps).block(0, 0, n, n);
     }
 
     // ── 작은/중간 행렬은 LAPACK / LU로 직접 처리 ─────────────────
@@ -2138,7 +2138,7 @@ Matrix<T> inverse_schur(const Matrix<T>& matrix, std::size_t min_block = 32, T e
     const auto c = matrix.block(h, 0, h, h);
     const auto d = matrix.block(h, h, h, h);
 
-    const auto a_inv = inverse_schur(a, min_block, eps);
+    const auto a_inv = inverse_schur_impl(a, min_block, eps);
 
     Matrix<T> ca_inv;
     Matrix<T> a_inv_b;
@@ -2154,7 +2154,7 @@ Matrix<T> inverse_schur(const Matrix<T>& matrix, std::size_t min_block = 32, T e
     }
 
     const auto schur = d - matmul(ca_inv, b);
-    const auto s_inv = inverse_schur(schur, min_block, eps);
+    const auto s_inv = inverse_schur_impl(schur, min_block, eps);
 
     Matrix<T> a_inv_b_s_inv;
     Matrix<T> s_inv_ca_inv;
@@ -2182,10 +2182,10 @@ Matrix<T> inverse_schur(const Matrix<T>& matrix, std::size_t min_block = 32, T e
 }
 
 template <typename T>
-Matrix<T> inverse_schur_strassen(const Matrix<T>& matrix,
-                                 std::size_t min_block = static_cast<std::size_t>(LINX_LAPACK_INVERSE_MAX),
-                                 std::size_t strassen_threshold = static_cast<std::size_t>(LINX_M2_STRASSEN_BASE),
-                                 T eps = static_cast<T>(1e-12)) {
+Matrix<T> inverse_schur_strassen_impl(const Matrix<T>& matrix,
+                                      std::size_t min_block = static_cast<std::size_t>(LINX_LAPACK_INVERSE_MAX),
+                                      std::size_t strassen_threshold = static_cast<std::size_t>(LINX_M2_STRASSEN_BASE),
+                                      T eps = static_cast<T>(1e-12)) {
     if (!matrix.square()) {
         throw ShapeError("inverse_schur_strassen requires a square matrix");
     }
@@ -2195,7 +2195,7 @@ Matrix<T> inverse_schur_strassen(const Matrix<T>& matrix,
 
     if (n > 1 && n % 2 != 0) {
         const auto padded = detail::pad_square_identity(matrix, n + 1);
-        return inverse_schur_strassen(padded, block, strassen_threshold, eps)
+        return inverse_schur_strassen_impl(padded, block, strassen_threshold, eps)
             .block(0, 0, n, n);
     }
 
@@ -2218,7 +2218,7 @@ Matrix<T> inverse_schur_strassen(const Matrix<T>& matrix,
     const auto c = matrix.block(h, 0, h, h);
     const auto d = matrix.block(h, h, h, h);
 
-    const auto a_inv = inverse_schur_strassen(a, block, strassen_threshold, eps);
+    const auto a_inv = inverse_schur_strassen_impl(a, block, strassen_threshold, eps);
 
     Matrix<T> ca_inv;
     Matrix<T> a_inv_b;
@@ -2234,7 +2234,7 @@ Matrix<T> inverse_schur_strassen(const Matrix<T>& matrix,
     }
 
     const auto schur = d - multiply(ca_inv, b);
-    const auto s_inv = inverse_schur_strassen(schur, block, strassen_threshold, eps);
+    const auto s_inv = inverse_schur_strassen_impl(schur, block, strassen_threshold, eps);
 
     Matrix<T> a_inv_b_s_inv;
     Matrix<T> s_inv_ca_inv;
@@ -2262,8 +2262,21 @@ Matrix<T> inverse_schur_strassen(const Matrix<T>& matrix,
 }
 
 template <typename T>
+Matrix<T> inverse_schur_safe(const Matrix<T>& matrix,
+                             std::size_t min_block = 32,
+                             T eps = static_cast<T>(1e-12),
+                             T residual_tol = static_cast<T>(1e-7),
+                             T regularization = static_cast<T>(1e-8),
+                             std::size_t max_regularization_steps = 6);
+
+template <typename T>
 Matrix<T> inverse(const Matrix<T>& matrix, T eps = static_cast<T>(1e-12)) {
-    return inverse_schur(matrix, 32, eps);
+    return inverse_schur_safe(matrix,
+                              32,
+                              eps,
+                              static_cast<T>(1e-7),
+                              static_cast<T>(1e-8),
+                              6);
 }
 
 template <typename T>
@@ -2315,6 +2328,139 @@ Matrix<T> inverse_regularized(const Matrix<T>& matrix, T lambda = static_cast<T>
 template <typename T>
 T residual_norm(const Matrix<T>& matrix, const Matrix<T>& inverse_matrix) {
     return frobenius_norm(matmul(matrix, inverse_matrix) - Matrix<T>::eye(matrix.rows()));
+}
+
+namespace detail {
+
+template <typename T>
+bool finite_and_better(T residual, T best_residual) {
+    return std::isfinite(static_cast<double>(residual)) && residual < best_residual;
+}
+
+template <typename T, typename PrimaryFn>
+Matrix<T> inverse_with_auto_fallback(const Matrix<T>& matrix,
+                                     PrimaryFn&& primary,
+                                     T eps,
+                                     T residual_tol,
+                                     T regularization,
+                                     std::size_t max_regularization_steps) {
+    if (!matrix.square()) {
+        throw ShapeError("inverse fallback requires a square matrix");
+    }
+
+    Matrix<T> best;
+    bool has_best = false;
+    T best_residual = std::numeric_limits<T>::infinity();
+    std::string last_error;
+
+    auto consider = [&](const Matrix<T>& candidate) -> bool {
+        const T residual = residual_norm(matrix, candidate);
+        if (finite_and_better(residual, best_residual)) {
+            best = candidate;
+            best_residual = residual;
+            has_best = true;
+        }
+        return std::isfinite(static_cast<double>(residual)) && residual <= residual_tol;
+    };
+
+    try {
+        const auto candidate = primary();
+        if (consider(candidate)) {
+            return candidate;
+        }
+    } catch (const std::exception& error) {
+        last_error = error.what();
+    }
+
+    try {
+        const auto candidate = inverse_lu(matrix, eps);
+        if (consider(candidate)) {
+            return candidate;
+        }
+    } catch (const std::exception& error) {
+        last_error = error.what();
+    }
+
+    T lambda = regularization > T{} ? regularization : std::max(eps, static_cast<T>(1e-12));
+    for (std::size_t step = 0; step < max_regularization_steps; ++step) {
+        try {
+            auto adjusted = matrix;
+            for (std::size_t i = 0; i < adjusted.rows(); ++i) {
+                adjusted(i, i) += lambda;
+            }
+
+            const auto candidate = inverse_lu(adjusted, eps);
+            if (consider(candidate)) {
+                return candidate;
+            }
+        } catch (const std::exception& error) {
+            last_error = error.what();
+        }
+        lambda *= static_cast<T>(10);
+    }
+
+    if (has_best) {
+        return best;
+    }
+
+    if (!last_error.empty()) {
+        throw LinAlgError("inverse fallback failed: " + last_error);
+    }
+    throw LinAlgError("inverse fallback failed");
+}
+
+} // namespace detail
+
+template <typename T>
+Matrix<T> inverse_schur_safe(const Matrix<T>& matrix,
+                             std::size_t min_block,
+                             T eps,
+                             T residual_tol,
+                             T regularization,
+                             std::size_t max_regularization_steps) {
+    return detail::inverse_with_auto_fallback(
+        matrix,
+        [&]() {
+            return inverse_schur_impl(matrix, min_block, eps);
+        },
+        eps,
+        residual_tol,
+        regularization,
+        max_regularization_steps);
+}
+
+template <typename T>
+Matrix<T> inverse_schur_strassen_safe(const Matrix<T>& matrix,
+                                      std::size_t min_block = static_cast<std::size_t>(LINX_LAPACK_INVERSE_MAX),
+                                      std::size_t strassen_threshold = static_cast<std::size_t>(LINX_M2_STRASSEN_BASE),
+                                      T eps = static_cast<T>(1e-12),
+                                      T residual_tol = static_cast<T>(1e-7),
+                                      T regularization = static_cast<T>(1e-8),
+                                      std::size_t max_regularization_steps = 6) {
+    return detail::inverse_with_auto_fallback(
+        matrix,
+        [&]() {
+            return inverse_schur_strassen_impl(matrix, min_block, strassen_threshold, eps);
+        },
+        eps,
+        residual_tol,
+        regularization,
+        max_regularization_steps);
+}
+
+template <typename T>
+Matrix<T> inverse_schur(const Matrix<T>& matrix,
+                        std::size_t min_block = 32,
+                        T eps = static_cast<T>(1e-12)) {
+    return inverse_schur_safe(matrix, min_block, eps);
+}
+
+template <typename T>
+Matrix<T> inverse_schur_strassen(const Matrix<T>& matrix,
+                                 std::size_t min_block = static_cast<std::size_t>(LINX_LAPACK_INVERSE_MAX),
+                                 std::size_t strassen_threshold = static_cast<std::size_t>(LINX_M2_STRASSEN_BASE),
+                                 T eps = static_cast<T>(1e-12)) {
+    return inverse_schur_strassen_safe(matrix, min_block, strassen_threshold, eps);
 }
 
 template <typename T>
